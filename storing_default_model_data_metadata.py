@@ -18,7 +18,7 @@ model = Model.default()
 ###################################################################################################
 
 import os
-os.makedirs("data_default_NN", exist_ok=True)
+os.makedirs("mlgw_bns_jax/data_default_NN/", exist_ok=True)
 
 ###################################################################################################
 ### Trained model metadata saving
@@ -104,7 +104,7 @@ model_dataset_bibl['frequencies']=frequencies
 ####################################################
 
 
-np.savez("data_default_NN/mlp_jax_dataset_training_hyperparams.npz",**model_dataset_bibl)
+np.savez("mlgw_bns_jax/data_default_NN/mlp_jax_dataset_training_hyperparams.npz",**model_dataset_bibl)
 
 
 
@@ -140,8 +140,8 @@ for i, W in enumerate(weights):
 for i, b in enumerate(biases):
     save_dict[f"b{i}"] = b
 
-np.savez("data_default_NN/mlp_jax_params.npz", **save_dict)
-np.savez("data_default_NN/scaler_params.npz", mean=mean.astype(np.float32), scale=scale.astype(np.float32))
+np.savez("mlgw_bns_jax/data_default_NN/mlp_jax_params.npz", **save_dict)
+np.savez("mlgw_bns_jax/data_default_NN/scaler_params.npz", mean=mean.astype(np.float32), scale=scale.astype(np.float32))
 
 #################################################
 ### printing important info on NN model
@@ -174,7 +174,7 @@ pca_dict['pca_data_eigenvectors']=pca_data_eigenvectors
 pca_dict['pca_data_eigenvalues']=pca_data_eigenvalues
 pca_dict['pca_data_mean']=pca_data_mean
 
-np.savez("data_default_NN/mlp_jax_pca_params.npz", **pca_dict)
+np.savez("mlgw_bns_jax/data_default_NN/mlp_jax_pca_params.npz", **pca_dict)
 
 ###################################################
 ### downsampling indexes data
@@ -182,11 +182,11 @@ np.savez("data_default_NN/mlp_jax_pca_params.npz", **pca_dict)
 
 indexes_downsampling=model.downsampling_indices.numbers_of_points
 
-np.savetxt("data_default_NN/mlp_jax_downsampling_indexes.dat", indexes_downsampling)
+np.savetxt("mlgw_bns_jax/data_default_NN/mlp_jax_downsampling_indexes.dat", indexes_downsampling)
 
 
 indexes_downsampling_amplitude=model.downsampling_indices.amplitude_indices
 indexes_downsampling_phase=model.downsampling_indices.phase_indices
 
-np.savetxt("data_default_NN/mlp_jax_downsampling_indexes_amplitude.dat", indexes_downsampling_amplitude)
-np.savetxt("data_default_NN/mlp_jax_downsampling_indexes_phase.dat", indexes_downsampling_phase)
+np.savetxt("mlgw_bns_jax/data_default_NN/mlp_jax_downsampling_indexes_amplitude.dat", indexes_downsampling_amplitude)
+np.savetxt("mlgw_bns_jax/data_default_NN/mlp_jax_downsampling_indexes_phase.dat", indexes_downsampling_phase)
