@@ -21,7 +21,7 @@ SUN_MASS_SECONDS: float = 4.92549094830932e-6  # M_sun * G / c**3
 EULER_GAMMA = 0.57721566490153286060
 
 
-from .jax_compacter_dataset_generation import (eta, m_1, m_2, lambdatilde, dlambda, taylor_f2, taylor_f2_prefactor, array_parameters)
+from .jax_dataset_generation import (eta, m_1, m_2, lambdatilde, dlambda, taylor_f2, taylor_f2_prefactor, array_parameters)
 
 #@jax.jit
 def smoothing_func(x):
