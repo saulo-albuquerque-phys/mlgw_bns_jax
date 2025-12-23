@@ -9,8 +9,11 @@ from .taylor_f2_jax import phase_5h_post_newtonian_tidal_jax,  amplitude_3h_post
 from .jax_model_functions import combine_amp_phase_jax,combine_residuals_amp_jax,combine_residuals_phi_jax,compute_polarizations_jax
 from .jax_downsampling_interpolation import resample, linear_resample_jax
 from .jax_dataset_generation import mlgw_bns_prefactor_jax, eta
+from importlib.resources import files
 
-model_dataset_bibl=numpy.load("mlgw_bns_jax/data_default_NN/mlp_jax_dataset_training_hyperparams.npz")
+path = files("mlgw_bns").joinpath("mlgw_bns_jax/data_default_NN/")
+
+model_dataset_bibl=numpy.load(path.joinpath("mlp_jax_dataset_training_hyperparams.npz"))
 
 frequencies_hz=model_dataset_bibl['frequencies_hz']
 frequencies=model_dataset_bibl['frequencies']
