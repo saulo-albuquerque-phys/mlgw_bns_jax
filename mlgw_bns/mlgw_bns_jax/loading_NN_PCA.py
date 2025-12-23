@@ -42,17 +42,18 @@ pca_data_eigenvectors=jnp.array(pca_diction['pca_data_eigenvectors'])
 pca_data_eigenvalues=jnp.array(pca_diction['pca_data_eigenvalues'])
 pca_data_mean=jnp.array(pca_diction['pca_data_mean'])
 
+W0, W1, W2 =parameters_NN[0]
+b0, b1, b2 =parameters_NN[1]
 
+indexes_downsampling_new_int=(int(indexes_downsampling[0]),int(indexes_downsampling[1]))
+amp_points, phase_points =indexes_downsampling_new_int
 
-@jax.jit
+#@jax.jit
 def mlp_forward_jax(x):
-    # 1️⃣ scale input
+    #  scale input
     x_scaled = (x - mean) / scale
 
-    # 2️⃣ forward pass (hard-coded)
-    W0, W1, W2 =parameters_NN[0]
-    b0, b1, b2 =parameters_NN[1]
-
+    #  forward pass (hard-coded)
     z1 = x_scaled @ W0 + b0
     a1 = jnp.tanh(z1)
 
@@ -62,7 +63,7 @@ def mlp_forward_jax(x):
     z3 = a2 @ W2 + b2
     return z3
 
-@jax.jit
+#@jax.jit
 def full_reconstruct_data_NN_jax(x):
         """Reconstruct the data.
 
@@ -91,10 +92,9 @@ def full_reconstruct_data_NN_jax(x):
         return zero_mean_data + pca_data_mean
 
 
-indexes_downsampling_new_int=(int(indexes_downsampling[0]),int(indexes_downsampling[1]))
-amp_points, phase_points =indexes_downsampling_new_int
 
-@jax.jit
+
+#@jax.jit
 def from_combined_residuals_jit(combined_residuals):
         #assert combined_residuals.shape[1] == amp_points + phase_points
         return combined_residuals[:, :amp_points], combined_residuals[:, -phase_points:]
