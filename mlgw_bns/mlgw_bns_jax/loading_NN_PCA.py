@@ -20,7 +20,7 @@ while f"W{i}" in loadweightbiases:
 
 parameters_NN = (weightsload, biasesload)
 
-scaler_data = np.load(path.joinpath("scaler_params.npz")
+scaler_data = np.load(path.joinpath("scaler_params.npz"))
 mean = jnp.array(scaler_data["mean"])
 scale = jnp.array(scaler_data["scale"])
 
