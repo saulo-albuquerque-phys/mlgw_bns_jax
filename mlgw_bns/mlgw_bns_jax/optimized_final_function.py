@@ -9,10 +9,10 @@ from .data_cache import (
     frequencies_saved_input_amp, frequencies_saved_input_phase,
     int_indexes_amp, int_indexes_phase
 )
-from .jax_compacter_taylorf2jax_functions import phase_5h_post_newtonian_tidal_jax, amplitude_3h_post_newtonian_jax
-from .jax_compacter_model_functions import combine_amp_phase_jax, combine_residuals_amp_jax, combine_residuals_phi_jax, compute_polarizations_jax
-from .jax_compacter_downsampling_interpolation import linear_resample_jax
-from .jax_compacter_dataset_generation import mlgw_bns_prefactor_jax, eta
+from .taylor_f2_jax import phase_5h_post_newtonian_tidal_jax, amplitude_3h_post_newtonian_jax
+from .jax_model_functions import combine_amp_phase_jax, combine_residuals_amp_jax, combine_residuals_phi_jax, compute_polarizations_jax
+from .jax_downsampling_interpolation import linear_resample_jax
+from .jax_dataset_generation import mlgw_bns_prefactor_jax, eta
 
 # Pre-compute static arrays that don't change
 @jax.jit
