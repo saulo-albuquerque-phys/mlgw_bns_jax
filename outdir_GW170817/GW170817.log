@@ -5732,3 +5732,25 @@
 15:17 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
 15:18 WARNING : Axis limits cannot be NaN or Inf
 15:18 WARNING : Failed to create dynesty run plot at checkpoint
+15:28 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+15:28 WARNING : Axis limits cannot be NaN or Inf
+15:28 WARNING : Failed to create dynesty run plot at checkpoint
+15:39 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+15:39 WARNING : Axis limits cannot be NaN or Inf
+15:39 WARNING : Failed to create dynesty run plot at checkpoint
+15:50 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+15:50 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+15:50 WARNING : Failed to create dynesty state plot at checkpoint
+15:50 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+15:50 WARNING : Failed to create dynesty unit state plot at checkpoint
+15:50 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+15:50 WARNING : Failed to create dynesty run plot at checkpoint
+16:01 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+16:01 WARNING : Axis limits cannot be NaN or Inf
+16:01 WARNING : Failed to create dynesty run plot at checkpoint
+16:12 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+16:12 WARNING : Axis limits cannot be NaN or Inf
+16:12 WARNING : Failed to create dynesty run plot at checkpoint
+16:22 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+16:23 WARNING : Axis limits cannot be NaN or Inf
+16:23 WARNING : Failed to create dynesty run plot at checkpoint
