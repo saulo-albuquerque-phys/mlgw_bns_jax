@@ -5754,3 +5754,39 @@
 16:22 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
 16:23 WARNING : Axis limits cannot be NaN or Inf
 16:23 WARNING : Failed to create dynesty run plot at checkpoint
+16:33 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+16:33 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+16:33 WARNING : Failed to create dynesty state plot at checkpoint
+16:33 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+16:33 WARNING : Failed to create dynesty unit state plot at checkpoint
+16:33 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+16:33 WARNING : Failed to create dynesty run plot at checkpoint
+16:43 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+16:43 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+16:43 WARNING : Failed to create dynesty state plot at checkpoint
+16:43 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+16:43 WARNING : Failed to create dynesty unit state plot at checkpoint
+16:43 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+16:43 WARNING : Failed to create dynesty run plot at checkpoint
+16:54 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+16:54 WARNING : Axis limits cannot be NaN or Inf
+16:54 WARNING : Failed to create dynesty run plot at checkpoint
+17:05 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+17:05 WARNING : Axis limits cannot be NaN or Inf
+17:05 WARNING : Failed to create dynesty run plot at checkpoint
+17:15 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+17:15 WARNING : Axis limits cannot be NaN or Inf
+17:15 WARNING : Failed to create dynesty run plot at checkpoint
+17:26 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+17:26 WARNING : Axis limits cannot be NaN or Inf
+17:26 WARNING : Failed to create dynesty run plot at checkpoint
+17:36 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+17:36 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+17:36 WARNING : Failed to create dynesty state plot at checkpoint
+17:36 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+17:36 WARNING : Failed to create dynesty unit state plot at checkpoint
+17:36 WARNING : The data appears to lie in a lower-dimensional subspace of the space in which it is expressed. This has resulted in a singular data covariance matrix, which cannot be treated using the algorithms implemented in `gaussian_kde`. Consider performing principal component analysis / dimensionality reduction and using `gaussian_kde` with the transformed data.
+17:36 WARNING : Failed to create dynesty run plot at checkpoint
+17:46 INFO    : Written checkpoint file outdir_GW170817/GW170817_resume.pickle
+17:46 WARNING : Axis limits cannot be NaN or Inf
+17:46 WARNING : Failed to create dynesty run plot at checkpoint
