@@ -11,4 +11,7 @@ import toml  # type: ignore
 
 from .model import Model, ParametersWithExtrinsic
 
-__version__ = metadata.version(__package__)  # type: ignore
+try:
+    __version__ = metadata.version(__package__)  # type: ignore
+except metadata.PackageNotFoundError:
+    __version__ = "0.12.1"
