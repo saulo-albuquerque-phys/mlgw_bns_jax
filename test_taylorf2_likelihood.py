@@ -68,16 +68,16 @@ def TaylorF2_template(params, frequency_array):
                 + nu**2 * 76055.0 / 1728.0 - nu**3 * 127825.0 / 1296.0)
         + v7 * jnp.pi * (77096675.0 / 254016.0 + nu * 378515.0 / 1512.0 - nu**2 * 74045.0 / 756.0)
     )
-    phi_plus = phi_plus + jnp.pi - jnp.pi / 4.0
-    phi_cross = phi_plus + jnp.pi / 2.0
-
-    phase_factor = jnp.exp(-1j * phi_c)
-    exp_phi_plus = jnp.exp(1j * phi_plus)
-    exp_phi_cross = jnp.exp(1j * phi_cross)
+    phi_plus -= jnp.pi / 4.0
 
     cos_iota_sq = cos_iota**2
-    h_plus  = phase_factor * amp * ((1.0 + cos_iota_sq) / 2.0) * exp_phi_plus
-    h_cross = phase_factor * amp * cos_iota * exp_phi_cross
+
+    # Phase convention: exp(-i*Psi) matching ripple/IMRPhenomD
+    h0 = amp * jnp.exp(-1j * phi_plus)
+    phase_factor = jnp.exp(-2j * phi_c)
+
+    h_plus  = phase_factor * h0 * ((1.0 + cos_iota_sq) / 2.0)
+    h_cross = phase_factor * (-1j) * h0 * cos_iota
 
     return h_plus, h_cross
 

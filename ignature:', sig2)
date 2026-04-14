@@ -1,0 +1,23 @@
+Help on function gen_IMRPhenomD_NRTidalv2_hphc in module ripplegw.waveforms.IMRPhenomD_NRTidalv2:
+
+ggeenn__IIMMRRPPhheennoommDD__NNRRTTiiddaallvv22__hhpphhcc(f: jax.Array, params: jax.Array, f_ref: float, use_lambda_tildes: bool = True, no_taper: bool = False)
+    vars array contains both intrinsic and extrinsic variables
+
+    IMRphenom denotes the name of the underlying BBH approximant used, before applying tidal corrections.
+
+    theta = [Mchirp, eta, chi1, chi2, lambda1, lambda2, D, tc, phic, inclination]
+    Mchirp: Chirp mass of the system [solar masses]
+    eta: Symmetric mass ratio [between 0.0 and 0.25]
+    chi1: Dimensionless aligned spin of the primary object [between -1 and 1]
+    chi2: Dimensionless aligned spin of the secondary object [between -1 and 1]
+    D: Luminosity distance to source [Mpc]
+    tc: Time of coalesence. This only appears as an overall linear in f contribution to the phase
+    phic: Phase of coalesence
+    inclination: Inclination angle of the binary [between 0 and PI]
+
+    f_ref: Reference frequency for the waveform
+
+    Returns:
+    --------
+        hp (array): Strain of the plus polarization
+        hc (array): Strain of the cross polarization
