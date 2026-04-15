@@ -85,16 +85,46 @@ class WfMLGWJAX:
         frequencies = np.arange(f_min, f_max + deltaF, deltaF)
 
         mlgw_params = jnp.array([q, lambda1, lambda2, s1z, s2z])
-        hp_jax, hc_jax = _mlgw_predict(
-            mlgw_params,
-            jnp.array(frequencies),
-            total_mass=jnp.array(total_mass),
-            distance_mpc=jnp.array(float(distance)),
-            inclination=jnp.array(inclination),
-        )
+        jnp_total_mass = jnp.array(total_mass)
+        jnp_distance = jnp.array(float(distance))
+        jnp_inclination = jnp.array(inclination)
 
-        hp = np.array(hp_jax, dtype=np.complex128)
-        hc = np.array(hc_jax, dtype=np.complex128)
+        # Evaluate in frequency chunks to avoid LLVM OOM during JIT
+        # compilation.  JAX caches the compiled code per input shape,
+        # so all chunks use the same size (last one is padded).
+        CHUNK = 32768
+        n_freq = len(frequencies)
+
+        if n_freq <= CHUNK:
+            hp_jax, hc_jax = _mlgw_predict(
+                mlgw_params, jnp.array(frequencies),
+                total_mass=jnp_total_mass,
+                distance_mpc=jnp_distance,
+                inclination=jnp_inclination,
+            )
+            hp = np.array(hp_jax, dtype=np.complex128)
+            hc = np.array(hc_jax, dtype=np.complex128)
+        else:
+            hp_parts, hc_parts = [], []
+            for i in range(0, n_freq, CHUNK):
+                chunk = frequencies[i : i + CHUNK]
+                # Pad last chunk so JAX reuses the same compiled code
+                pad = CHUNK - len(chunk)
+                if pad > 0:
+                    chunk = np.concatenate([chunk, np.full(pad, chunk[-1])])
+                hp_c, hc_c = _mlgw_predict(
+                    mlgw_params, jnp.array(chunk),
+                    total_mass=jnp_total_mass,
+                    distance_mpc=jnp_distance,
+                    inclination=jnp_inclination,
+                )
+                if pad > 0:
+                    hp_c = hp_c[:CHUNK - pad]
+                    hc_c = hc_c[:CHUNK - pad]
+                hp_parts.append(np.array(hp_c, dtype=np.complex128))
+                hc_parts.append(np.array(hc_c, dtype=np.complex128))
+            hp = np.concatenate(hp_parts)
+            hc = np.concatenate(hc_parts)
 
         # Apply coalescence phase
         if abs(phiref) > 1e-15:
