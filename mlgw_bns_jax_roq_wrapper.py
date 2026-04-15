@@ -16,6 +16,10 @@ Usage:
 import os
 import numpy as np
 
+# NumPy 2.0 removed VisibleDeprecationWarning; JenpyROQ still references it
+if not hasattr(np, "VisibleDeprecationWarning"):
+    np.VisibleDeprecationWarning = FutureWarning
+
 # Force CPU for deterministic basis construction
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
