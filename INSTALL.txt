@@ -1,0 +1,67 @@
+================================================================================
+  Setup Instructions — mlgw_bns_jax on IGWN / LIGO Jupyter Server
+================================================================================
+
+1. CLONE THE REPOSITORIES
+-------------------------
+
+   # Clone the main repo (branch: blackjax_ns_gw_pe)
+   git clone -b blackjax_ns_gw_pe https://github.com/saulo-albuquerque-phys/mlgw_bns_jax.git
+   cd mlgw_bns_jax
+
+   # Clone SHARPy inside the repo as _sharpy_repo
+   git clone https://github.com/saulo-albuquerque-phys/sharpy.git _sharpy_repo
+
+
+2. CREATE THE CONDA ENVIRONMENT
+--------------------------------
+
+   conda env create -f environment.yml
+   conda activate mlgw-bns-jax
+
+
+3. INSTALL LOCAL PACKAGES
+--------------------------
+
+   # Install SHARPy (editable mode)
+   pip install -e ./_sharpy_repo
+
+   # Install mlgw_bns (editable mode)
+   pip install -e .
+
+
+4. REGISTER THE JUPYTER KERNEL
+-------------------------------
+
+   python -m ipykernel install --user --name mlgw-bns-jax --display-name "mlgw-bns-jax"
+
+
+5. USE IN JUPYTER
+------------------
+
+   Open any notebook and select the kernel "mlgw-bns-jax".
+
+   Key notebooks:
+     - build_roq_basis.ipynb              → Build the ROQ basis
+     - roq_pe_mlgw_bns_jax.ipynb          → ROQ-accelerated parameter estimation
+     - sharpy_mlgw_bns_jax_pe_fixedsky.ipynb → Standard (non-ROQ) PE with SHARPy
+     - sharpy_taylorf2_pe_fixedsky.ipynb   → TaylorF2 PE with SHARPy
+
+
+NOTES
+-----
+
+- The conda environment installs `framel` from conda-forge, which is required
+  for reading GW frame files (.gwf) and is NOT available via pip.
+
+- `blackjax` is installed from the gabrieledemasi fork
+  (https://github.com/gabrieledemasi/blackjax), not the official PyPI package.
+
+- `JenpyROQ` is installed from GitHub
+  (https://github.com/GCArullo/JenpyROQ).
+
+- If the LIGO server already provides `lalsuite` / `gwpy` system-wide, the
+  conda environment installs its own isolated copies to avoid version conflicts.
+
+- To build the ROQ basis from the command line (instead of the notebook):
+    python build_roq_basis.py
