@@ -8,9 +8,17 @@
 #
 # Then select the "mlgw-bns-jax" kernel in Jupyter.
 #
-# NOTE: Uses --override-channels to avoid conflicts with IGWN base
-#       system packages (libuuid, expat, ligo-lvalert, etc.).
-#       Run with:  conda env create -f environment.yml --override-channels
+# If `conda env create` fails due to IGWN base conflicts, use instead:
+#   conda create -n mlgw-bns-jax -c conda-forge --override-channels \
+#     python=3.11 pip framel lalsuite gwpy ipykernel numpy scipy \
+#     matplotlib h5py astropy numba pandas scikit-learn tqdm
+#   conda activate mlgw-bns-jax
+#   pip install jax jaxlib jaxopt optax equinox flax ripplegw corner \
+#     anesthetic seaborn "NetKet==3.20.5" PyYAML toml dacite joblib \
+#     sortedcontainers requests \
+#     "blackjax @ git+https://github.com/gabrieledemasi/blackjax@main" \
+#     "JenpyROQ @ git+https://github.com/GCArullo/JenpyROQ.git"
+#   pip install -e ./_sharpy_repo && pip install -e .
 
 name: mlgw-bns-jax
 
