@@ -1,19 +1,24 @@
 # Conda environment for mlgw_bns_jax ROQ PE on IGWN/LIGO Jupyter
+#
 # Usage:
 #   conda env create -f environment.yml
 #   conda activate mlgw-bns-jax
+#   pip install -e ./_sharpy_repo && pip install -e .
 #   python -m ipykernel install --user --name mlgw-bns-jax --display-name "mlgw-bns-jax"
 #
 # Then select the "mlgw-bns-jax" kernel in Jupyter.
+#
+# NOTE: Uses --override-channels to avoid conflicts with IGWN base
+#       system packages (libuuid, expat, ligo-lvalert, etc.).
+#       Run with:  conda env create -f environment.yml --override-channels
 
 name: mlgw-bns-jax
 
 channels:
   - conda-forge
-  - defaults
 
 dependencies:
-  - python=3.12
+  - python>=3.11,<3.13
   - pip
 
   # ── C libraries only available via conda-forge ────────────────────

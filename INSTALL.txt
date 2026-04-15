@@ -16,8 +16,14 @@
 2. CREATE THE CONDA ENVIRONMENT
 --------------------------------
 
-   conda env create -f environment.yml
+   # Use --override-channels to avoid conflicts with IGWN base packages
+   conda env create -f environment.yml --override-channels
    conda activate mlgw-bns-jax
+
+   # If that still fails, try creating a minimal env first:
+   #   conda create -n mlgw-bns-jax -c conda-forge --override-channels python=3.11 pip framel lalsuite gwpy ipykernel
+   #   conda activate mlgw-bns-jax
+   #   pip install -r requirements_pip.txt   (see step 3)
 
 
 3. INSTALL LOCAL PACKAGES
