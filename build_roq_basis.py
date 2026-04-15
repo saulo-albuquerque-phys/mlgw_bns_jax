@@ -10,7 +10,7 @@ Usage:
     python build_roq_basis.py
 """
 
-import os, sys, logging
+import os, sys, logging, gc
 
 os.environ["JAX_PLATFORMS"] = "cpu"
 
@@ -43,7 +43,6 @@ print(f"  Training ranges: {params_ranges}")
 print(f"  Output: {OUT_DIR}")
 print(f"{'='*60}\n")
 
-# ── Build basis ─────────────────────────────────────────────────────
 pool = initialize_serial_pool()
 with pool as p:
     roq = JenpyROQ(config_pars, params_ranges, distance=10.0, pool=p)
@@ -52,6 +51,12 @@ with pool as p:
     data_lin = roq.run("lin")
     n_lin = len(data_lin["lin_emp_nodes"])
     print(f"Linear basis: {n_lin} elements")
+
+    # Free linear arrays before quadratic build.
+    # All results are already saved to disk by JenpyROQ.
+    del data_lin
+    gc.collect()
+    print("(linear data freed from RAM — saved on disk)")
 
     print("\n--- Building QUADRATIC basis ---")
     data_qua = roq.run("qua")
