@@ -1,0 +1,65 @@
+# Conda environment for mlgw_bns_jax ROQ PE on IGWN/LIGO Jupyter
+# Usage:
+#   conda env create -f environment.yml
+#   conda activate mlgw-bns-jax
+#   python -m ipykernel install --user --name mlgw-bns-jax --display-name "mlgw-bns-jax"
+#
+# Then select the "mlgw-bns-jax" kernel in Jupyter.
+
+name: mlgw-bns-jax
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.12
+  - pip
+
+  # ── C libraries only available via conda-forge ────────────────────
+  - framel                   # required for reading GW frame files (.gwf)
+  - lalsuite                 # LAL waveform infrastructure
+  - gwpy                     # GW data access & processing
+
+  # ── Jupyter kernel registration ───────────────────────────────────
+  - ipykernel
+
+  # ── Scientific stack (conda for binary compatibility) ─────────────
+  - numpy
+  - scipy
+  - matplotlib
+  - h5py
+  - astropy
+  - numba
+  - pandas
+  - scikit-learn
+  - tqdm
+
+  # ── pip-only packages ─────────────────────────────────────────────
+  - pip:
+    # JAX stack
+    - jax
+    - jaxlib
+    - jaxopt
+    - optax
+    - equinox
+    - flax
+
+    # Waveform & PE
+    - ripplegw
+    - corner
+    - anesthetic
+    - seaborn
+    - NetKet==3.20.5
+
+    # Git-installed packages
+    - "blackjax @ git+https://github.com/gabrieledemasi/blackjax@main"
+    - "JenpyROQ @ git+https://github.com/GCArullo/JenpyROQ.git"
+
+    # Utilities
+    - PyYAML
+    - toml
+    - dacite
+    - joblib
+    - sortedcontainers
+    - requests
