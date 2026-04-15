@@ -3,6 +3,8 @@
 .pytest_cache/
 __pycache__/
 .tox/
+venv/
+_sharpy_repo/
 dist/
 .mypy_cache/
 .ipynb_checkpoints/
