@@ -127,3 +127,9 @@ Building ROQ basis for mlgw-bns-jax
 2026-04-15 02:13:33,466 INFO  Pre-selection iteration: 3 -- Largest projection error: 3.075724715273935
 2026-04-15 02:14:08,578 INFO  Timing: pre-selection basis 4 iteration, generating 100 waveforms with parallel=0 [minutes]: 0.5790306329727173
 2026-04-15 02:14:08,578 INFO  Pre-selection iteration: 4 -- Largest projection error: 2.7416523240344954
+2026-04-15 02:15:01,083 INFO  Timing: pre-selection basis 5 iteration, generating 100 waveforms with parallel=0 [minutes]: 0.8688379486401876
+2026-04-15 02:15:01,099 INFO  Pre-selection iteration: 5 -- Largest projection error: 2.4389706995585416
+2026-04-15 02:15:35,688 INFO  Timing: pre-selection basis 6 iteration, generating 100 waveforms with parallel=0 [minutes]: 0.5702755729357402
+2026-04-15 02:15:35,688 INFO  Pre-selection iteration: 6 -- Largest projection error: 2.5361771178357695
+2026-04-15 02:16:09,806 INFO  Timing: pre-selection basis 7 iteration, generating 100 waveforms with parallel=0 [minutes]: 0.5611176927884419
+2026-04-15 02:16:09,806 INFO  Pre-selection iteration: 7 -- Largest projection error: 3.0250688465451
