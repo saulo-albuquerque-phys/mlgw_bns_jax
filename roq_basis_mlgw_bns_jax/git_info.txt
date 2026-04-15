@@ -1,5 +1,6 @@
 PyROQ
-branch: blackjax_ns_gw_pe\n	 commit: 94e14d3513e343d87c4d590f8a5febaf5a4071f9
+branch: copilot/add-reduced-order-quadrature-model\n	 commit: dce7b6ab185606834992b6ac2e625da9dfe3ebe3
 Author: saulo-albuquerque-phys\n saulo.soaresdealbuquerquefilho@uniurb.it\n
 
 Git diff:
+diff --git a/roq_basis_mlgw_bns_jax/git_info.txt b/roq_basis_mlgw_bns_jax/git_info.txt\nindex 94c4153..e69de29 100644\n--- a/roq_basis_mlgw_bns_jax/git_info.txt\n+++ b/roq_basis_mlgw_bns_jax/git_info.txt\n@@ -1,5 +0,0 @@\n-PyROQ\n-branch: blackjax_ns_gw_pe\\n\t commit: 94e14d3513e343d87c4d590f8a5febaf5a4071f9\n-Author: saulo-albuquerque-phys\\n saulo.soaresdealbuquerquefilho@uniurb.it\\n\n-\n-Git diff:\n

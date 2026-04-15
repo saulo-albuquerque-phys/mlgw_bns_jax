@@ -1,0 +1,54 @@
+JenpyROQ Resume/Restart Instructions
+======================================
+
+JenpyROQ has native support for resuming a build via the `pre-basis`
+parameter in the config INI file.
+
+Available values for `pre-basis`:
+---------------------------------
+
+  corners               → Start from scratch (default)
+  pre-selected-basis    → Load completed pre-selection, skip to enrichment
+  pre-enriched-basis    → Load completed enrichment, skip to empirical nodes
+
+Files saved by JenpyROQ at each stage:
+--------------------------------------
+
+After pre-selection:
+  ROQ_data/linear/preselection_linear_basis.npy
+  ROQ_data/linear/preselection_linear_basis_waveform_params.npy
+  ROQ_data/linear/preselection_linear_basis_residual_modula.npy
+  (same for quadratic/)
+
+After enrichment:
+  ROQ_data/linear/basis_linear.npy
+  ROQ_data/linear/basis_waveform_params_linear.npy
+  (same for quadratic/)
+
+How to resume on IGWN:
+----------------------
+
+If the build died after pre-selection completed:
+
+  sed -i 's/pre-basis.*= corners/pre-basis = pre-selected-basis/' \
+      config_roq_mlgw_bns_jax_gw170817.ini
+  python build_roq_basis_numpy.py
+
+If the build died after enrichment (linear) completed:
+
+  sed -i 's/pre-basis.*= .*/pre-basis = pre-enriched-basis/' \
+      config_roq_mlgw_bns_jax_gw170817.ini
+  python build_roq_basis_numpy.py
+
+Limitations:
+------------
+
+- There is NO resume within an enrichment cycle. If it dies during
+  cycle 2 (50k waveforms), it restarts enrichment from cycle 1, but
+  with pre-selection already loaded (much faster).
+
+- The quadratic basis build restarts from scratch if only the linear
+  part finished, but quadratic is typically very fast (~10 basis vectors).
+
+- Remember to change `pre-basis` back to `corners` if you want a
+  clean rebuild from scratch.

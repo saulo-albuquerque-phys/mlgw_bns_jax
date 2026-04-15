@@ -1,0 +1,108 @@
+Session Context — mlgw_bns_jax (April 15, 2026)
+=================================================
+
+Repository: saulo-albuquerque-phys/mlgw_bns_jax
+Branch:     copilot/add-reduced-order-quadrature-model
+Default:    master (upstream: jacopok/mlgw_bns)
+
+## What was done this session
+
+### 1. ROQ basis build script (NumPy-based)
+   - Created `build_roq_basis_numpy.py` — uses mlgw_bns_roq_wrapper.py (pure NumPy)
+     to avoid JAX LLVM memory overhead during 100k+ waveform generation.
+   - Config: `config_roq_mlgw_bns_jax_gw170817.ini`
+     - f = [23, 2000] Hz, seglen = 128s → 253,057 freq points
+     - Mc ∈ [1.18, 1.21] M☉
+     - Tolerance: 1e-4 (linear), 1e-6 (quadratic)
+     - 3 enrichment cycles: 10k, 50k, 100k waveforms
+   - Commit: dce7b6a
+
+### 2. IGWN setup script
+   - Created `setup_igwn.sh` — one-shot conda env setup for IGWN JupyterHub.
+   - Installs: conda-forge packages, JAX 0.4.38 (pinned), JenpyROQ, SHARPy,
+     mlgw_bns, blackjax, patches JenpyROQ for numpy 2.0.
+   - Commit: 5467048
+
+### 3. ROQ PE optimization (node-only evaluation)
+   - Optimized `roq_pe_mlgw_bns_jax.ipynb` cells 9-12 to call predict()
+     only at f_lin and f_qua empirical nodes (~260 + ~10 points)
+     instead of full 253k grid.
+   - Memory reduction ~100x per sampler particle.
+   - Commit: f78c75c
+
+### 4. .gitignore fix
+   - Added `venv/` and `_sharpy_repo/` — eliminated ~10k untracked files.
+   - Commit: 3ebf27c
+
+### 5. Post-build validation script
+   - Created `validate_and_package_roq.py` — validates ROQ basis with 200
+     random mismatches and packages small files into roq_pe_package.zip
+     for Colab (~10 MB).
+   - Commit: c52342b
+
+### 6. Draft paper
+   - Created `paper_mlgw_bns_jax.tex` — full revtex4-2 PRD paper.
+   - Sections: Intro, Original model, JAX reimplementation, Accuracy,
+     Speed (TBD), ROQ, PE with SHARPy (TBD), Conclusions.
+   - Key results: mismatch table, architecture details, ROQ formulas.
+   - TBD placeholders for: speed benchmarks, PE posteriors, corner plot.
+   - Commit: ab10c15
+
+### 7. JenpyROQ resume instructions
+   - Created `jenpyroq_resume_instructions.txt` — how to resume ROQ build
+     if IGWN machine dies, using `pre-basis` config option.
+
+## ROQ Build Status (from Codespace before timeout)
+
+The build ran on this Codespace and completed:
+  ✅ Pre-selection (linear): 100 basis vectors → preselection_linear_basis.npy (387 MB)
+  ✅ Enrichment (linear): completed → basis_linear.npy (398 MB)
+  ❓ Empirical nodes (linear): unknown — may have completed
+  ❓ Quadratic: not started or unknown
+
+If resuming on IGWN and the linear is fully done (check for
+empirical_nodes_linear.npy and basis_interpolant_linear.npy):
+  - The quadratic part should run fast (~10 basis vectors)
+  - If linear enrichment is done but nodes aren't computed yet,
+    use `pre-basis = pre-enriched-basis` to skip to that step
+
+Files in roq_basis_mlgw_bns_jax/ROQ_data/linear/:
+  - preselection_linear_basis.npy                    (387 MB)
+  - preselection_linear_basis_waveform_params.npy    (6.4 KB)
+  - preselection_linear_basis_residual_modula.npy    (928 B)
+  - basis_linear.npy                                 (398 MB)
+  - basis_waveform_params_linear.npy                 (6.6 KB)
+
+## Key Architecture Facts
+
+- mlgw_bns_jax model: MLP 5→82→95→30 (tanh), 11,847 params
+  PCA: 30→6197 components (5046 amp + 1151 phase)
+- jax_import_n_predict.py: 638 lines, standalone JAX predictor
+- load_predict(path) → predict(params, frequencies_hz, total_mass, distance_mpc, inclination)
+- Cubic spline tridiagonal solver via jax.lax.scan
+- Float64 enforced
+
+## Environment
+
+- Python 3.11, JAX 0.4.38 (pinned, last for Py3.11)
+- SHARPy: fully JAX-native (import jax.numpy as np in utils.py)
+- JenpyROQ 0.0.1 from GitHub, patched for numpy 2.0
+
+## Workflow: IGWN → Colab Pipeline
+
+1. On IGWN: `bash setup_igwn.sh` (one-time)
+2. On IGWN: `python build_roq_basis_numpy.py` (hours)
+   - If it dies, edit pre-basis in INI and restart (see resume instructions)
+3. On IGWN: `python validate_and_package_roq.py` → roq_pe_package.zip
+4. Upload zip to Google Drive
+5. On Colab: run PE notebook with SHARPy + mlgw_bns_jax + ROQ weights
+
+## Commits This Session (chronological)
+
+1. dce7b6a — Add NumPy-based ROQ build script
+2. 5467048 — Add IGWN setup script and improve notebook/docs
+3. f78c75c — Optimize ROQ PE: node-only waveform evaluation
+4. 3ebf27c — Add venv/ and _sharpy_repo/ to .gitignore
+5. c52342b — Add post-build validation and Colab packaging script
+6. ab10c15 — Add draft paper: mlgw_bns_jax JAX reimplementation
+7. (pending) — Add resume instructions and session context

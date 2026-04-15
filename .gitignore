@@ -5,6 +5,12 @@ __pycache__/
 .tox/
 venv/
 _sharpy_repo/
+
+# Large ROQ basis files (>100 MB, exceed GitHub limit)
+# Keep only small files (params, config, interpolants, nodes)
+roq_basis_mlgw_bns_jax/ROQ_data/**/preselection_*_basis.npy
+roq_basis_mlgw_bns_jax/ROQ_data/**/basis_linear.npy
+roq_basis_mlgw_bns_jax/ROQ_data/**/basis_quadratic.npy
 dist/
 .mypy_cache/
 .ipynb_checkpoints/
