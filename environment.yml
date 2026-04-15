@@ -10,10 +10,10 @@
 #
 # If `conda env create` fails due to IGWN base conflicts, use instead:
 #   conda create -n mlgw-bns-jax -c conda-forge --override-channels \
-#     python=3.11 pip framel lalsuite gwpy ipykernel numpy scipy \
-#     matplotlib h5py astropy numba pandas scikit-learn tqdm
+#     python=3.11 pip framel lalsuite gwpy ipykernel \
+#     numpy=2.0 scipy matplotlib h5py astropy numba pandas scikit-learn tqdm
 #   conda activate mlgw-bns-jax
-#   pip install jax jaxlib jaxopt optax equinox flax ripplegw corner \
+#   pip install "jax[cpu]==0.4.38" jaxopt optax equinox flax ripplegw corner \
 #     anesthetic seaborn "NetKet==3.20.5" PyYAML toml dacite joblib \
 #     sortedcontainers requests \
 #     "blackjax @ git+https://github.com/gabrieledemasi/blackjax@main" \
@@ -26,7 +26,7 @@ channels:
   - conda-forge
 
 dependencies:
-  - python>=3.11,<3.13
+  - python=3.11
   - pip
 
   # ── C libraries only available via conda-forge ────────────────────
@@ -37,8 +37,8 @@ dependencies:
   # ── Jupyter kernel registration ───────────────────────────────────
   - ipykernel
 
-  # ── Scientific stack (conda for binary compatibility) ─────────────
-  - numpy
+  # ── Scientific stack ──────────────────────────────────────────────
+  - numpy=2.0                # pinned: 2.0.x is the last numpy 2 for Py3.11
   - scipy
   - matplotlib
   - h5py
@@ -50,9 +50,8 @@ dependencies:
 
   # ── pip-only packages ─────────────────────────────────────────────
   - pip:
-    # JAX stack
-    - jax
-    - jaxlib
+    # JAX stack — pinned to 0.4.38, last version supporting Python 3.11
+    - "jax[cpu]==0.4.38"
     - jaxopt
     - optax
     - equinox
