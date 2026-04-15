@@ -1,0 +1,129 @@
+/workspaces/mlgw_bns_jax/mlgw_bns/model.py:13: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  import pkg_resources
+
+Warning: `LALSimulation` module not found.
+
+
+Warning: `TEOBResumS` module not found.
+
+
+Warning: `bajes` module or `teobresums` module not found.
+
+
+Warning: bajes module not found. Cannot initialise NRPMw recalibration parameters.
+
+2026-04-15 02:11:46,031 INFO  
+2026-04-15 02:11:46,032 INFO  Reading config file: config_roq_mlgw_bns_jax_gw170817.ini.
+2026-04-15 02:11:46,032 INFO  With sections: ['I/O', 'Parallel', 'Waveform_and_parametrisation', 'ROQ', 'Training_range', 'Test_values'].
+2026-04-15 02:11:46,033 INFO  
+2026-04-15 02:11:46,033 INFO  ####################
+2026-04-15 02:11:46,034 INFO  # [[38;5;39mInput parameters[0m #
+2026-04-15 02:11:46,034 INFO  ####################
+2026-04-15 02:11:46,034 INFO  
+2026-04-15 02:11:46,034 INFO  I'll be running with the following values:
+2026-04-15 02:11:46,034 INFO  
+2026-04-15 02:11:46,034 INFO  [[[38;5;39mI/O[0m]
+2026-04-15 02:11:46,034 INFO  
+2026-04-15 02:11:46,034 INFO  output                  : ./roq_basis_mlgw_bns_jax/ 
+2026-04-15 02:11:46,035 INFO  verbose                 : 1 
+2026-04-15 02:11:46,035 INFO  debug                   : 0 
+2026-04-15 02:11:46,035 INFO  timing                  : 1 
+2026-04-15 02:11:46,035 INFO  show-plots              : 0 
+2026-04-15 02:11:46,035 INFO  post-processing-only    : 0 
+2026-04-15 02:11:46,035 INFO  random-seed             : 170817 
+2026-04-15 02:11:46,035 INFO  
+2026-04-15 02:11:46,035 INFO  [[[38;5;39mParallel[0m]
+2026-04-15 02:11:46,035 INFO  
+2026-04-15 02:11:46,035 INFO  parallel                : 0 
+2026-04-15 02:11:46,035 INFO  n-processes             : 1 
+2026-04-15 02:11:46,036 INFO  
+2026-04-15 02:11:46,036 INFO  [[[38;5;39mWaveform_and_parametrisation[0m]
+2026-04-15 02:11:46,036 INFO  
+2026-04-15 02:11:46,036 INFO  approximant             : mlgw-bns-jax 
+2026-04-15 02:11:46,036 INFO  spins                   : aligned 
+2026-04-15 02:11:46,036 INFO  tides                   : 1 
+2026-04-15 02:11:46,037 INFO  eccentricity            : 0 
+2026-04-15 02:11:46,037 INFO  post-merger             : 0 
+2026-04-15 02:11:46,037 INFO  dynamics                : 0 
+2026-04-15 02:11:46,037 INFO  mc-q-par                : 1 
+2026-04-15 02:11:46,037 INFO  m-q-par                 : 0 
+2026-04-15 02:11:46,037 INFO  spin-sph                : 0 
+2026-04-15 02:11:46,037 INFO  f-min                   : 23.0 
+2026-04-15 02:11:46,037 INFO  f-max                   : 2000.0 
+2026-04-15 02:11:46,037 INFO  seglen                  : 128.0 
+2026-04-15 02:11:46,037 INFO  
+2026-04-15 02:11:46,037 INFO  [[[38;5;39mROQ[0m]
+2026-04-15 02:11:46,037 INFO  
+2026-04-15 02:11:46,037 INFO  gram-schmidt            : 0 
+2026-04-15 02:11:46,037 INFO  basis-lin               : 1 
+2026-04-15 02:11:46,038 INFO  basis-qua               : 1 
+2026-04-15 02:11:46,038 INFO  pre-basis               : corners 
+2026-04-15 02:11:46,038 INFO  tolerance-pre-basis-lin : 0.0001 
+2026-04-15 02:11:46,038 INFO  tolerance-pre-basis-qua : 1e-06 
+2026-04-15 02:11:46,038 INFO  n-pre-basis-lin         : 100 
+2026-04-15 02:11:46,038 INFO  n-pre-basis-qua         : 5 
+2026-04-15 02:11:46,038 INFO  n-pre-basis-search-iter : 100 
+2026-04-15 02:11:46,038 INFO  n-training-set-cycles   : 3 
+2026-04-15 02:11:46,038 INFO  training-set-sizes      : [10000, 50000, 100000] 
+2026-04-15 02:11:46,038 INFO  training-set-n-outliers : [10, 5, 0] 
+2026-04-15 02:11:46,039 INFO  training-set-rel-tol    : [0.1, 0.5, 1.0] 
+2026-04-15 02:11:46,039 INFO  tolerance-lin           : 0.0001 
+2026-04-15 02:11:46,039 INFO  tolerance-qua           : 1e-06 
+2026-04-15 02:11:46,039 INFO  n-tests-post            : 1000 
+2026-04-15 02:11:46,039 INFO  minimum-speedup         : 1.0 
+2026-04-15 02:11:46,049 INFO  
+2026-04-15 02:11:46,050 INFO  [[[38;5;39mTraining_range[0m]
+2026-04-15 02:11:46,050 INFO  
+2026-04-15 02:11:46,050 INFO  mc                      : [1.18,1.21]
+2026-04-15 02:11:46,050 INFO  q                       : [1.0,2.0]
+2026-04-15 02:11:46,050 INFO  s1z                     : [-0.5,0.5]
+2026-04-15 02:11:46,050 INFO  s2z                     : [-0.5,0.5]
+2026-04-15 02:11:46,050 INFO  lambda1                 : [5.0,5000.0]
+2026-04-15 02:11:46,050 INFO  lambda2                 : [5.0,5000.0]
+2026-04-15 02:11:46,051 INFO  iota                    : [0.0,3.14159265358979]
+2026-04-15 02:11:46,051 INFO  phiref                  : [0.0,6.28318530717959]
+2026-04-15 02:11:46,051 INFO  
+
+============================================================
+Building ROQ basis for mlgw-bns-jax
+  f = [23.0, 2000.0] Hz, seglen = 128.0 s
+  Training ranges: {'mc': [1.18, 1.21], 'q': [1.0, 2.0], 's1z': [-0.5, 0.5], 's2z': [-0.5, 0.5], 'lambda1': [5.0, 5000.0], 'lambda2': [5.0, 5000.0], 'iota': [0.0, 3.14159265358979], 'phiref': [0.0, 6.28318530717959]}
+  Output: ./roq_basis_mlgw_bns_jax/
+============================================================
+
+2026-04-15 02:11:46,052 INFO  ######################
+2026-04-15 02:11:46,053 INFO  # [[38;5;39mInitialising basis[0m #
+2026-04-15 02:11:46,053 INFO  ######################
+2026-04-15 02:11:46,053 INFO  
+2026-04-15 02:11:46,053 INFO  nparams = 8
+2026-04-15 02:11:46,053 INFO  
+2026-04-15 02:11:46,053 INFO  index | name        | ( min - max )           
+2026-04-15 02:11:46,053 INFO  0     | mc          | ( 1.180000 - 1.210000 ) 
+2026-04-15 02:11:46,053 INFO  1     | q           | ( 1.000000 - 2.000000 ) 
+2026-04-15 02:11:46,053 INFO  2     | s1z         | ( -0.500000 - 0.500000 ) 
+2026-04-15 02:11:46,053 INFO  3     | s2z         | ( -0.500000 - 0.500000 ) 
+2026-04-15 02:11:46,053 INFO  4     | lambda1     | ( 5.000000 - 5000.000000 ) 
+2026-04-15 02:11:46,053 INFO  5     | lambda2     | ( 5.000000 - 5000.000000 ) 
+2026-04-15 02:11:46,053 INFO  6     | iota        | ( 0.000000 - 3.141593 ) 
+2026-04-15 02:11:46,053 INFO  7     | phiref      | ( 0.000000 - 6.283185 ) 
+2026-04-15 02:11:46,053 INFO  
+2026-04-15 02:11:46,053 INFO  Initial number of frequency points: 253057
+
+--- Building LINEAR basis ---
+2026-04-15 02:11:51,318 INFO  
+2026-04-15 02:11:51,318 INFO  #############################
+2026-04-15 02:11:51,318 INFO  # [38;5;[38;5;39mStarting lin preselection[0m #
+2026-04-15 02:11:51,318 INFO  #############################
+2026-04-15 02:11:51,318 INFO  
+2026-04-15 02:11:51,319 INFO  N points per iter  : 100
+2026-04-15 02:11:51,319 INFO  Tolerance          : 0.0001
+2026-04-15 02:11:51,319 INFO  Maximum iterations : 98
+2026-04-15 02:11:51,319 INFO  
+2026-04-15 02:12:23,868 INFO  Timing: pre-selection basis 1 iteration, generating 100 waveforms with parallel=0 [minutes]: 0.542487355073293
+2026-04-15 02:12:23,868 INFO  Pre-selection iteration: 1 -- Largest projection error: 2.44749502210412
+2026-04-15 02:12:57,324 INFO  Timing: pre-selection basis 2 iteration, generating 100 waveforms with parallel=0 [minutes]: 0.5524962345759074
+2026-04-15 02:12:57,324 INFO  Pre-selection iteration: 2 -- Largest projection error: 2.6606427083246498
+2026-04-15 02:13:33,466 INFO  Timing: pre-selection basis 3 iteration, generating 100 waveforms with parallel=0 [minutes]: 0.5965048829714458
+2026-04-15 02:13:33,466 INFO  Pre-selection iteration: 3 -- Largest projection error: 3.075724715273935
+2026-04-15 02:14:08,578 INFO  Timing: pre-selection basis 4 iteration, generating 100 waveforms with parallel=0 [minutes]: 0.5790306329727173
+2026-04-15 02:14:08,578 INFO  Pre-selection iteration: 4 -- Largest projection error: 2.7416523240344954

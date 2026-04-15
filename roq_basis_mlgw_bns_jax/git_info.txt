@@ -1,0 +1,5 @@
+PyROQ
+branch: blackjax_ns_gw_pe\n	 commit: 94e14d3513e343d87c4d590f8a5febaf5a4071f9
+Author: saulo-albuquerque-phys\n saulo.soaresdealbuquerquefilho@uniurb.it\n
+
+Git diff:
