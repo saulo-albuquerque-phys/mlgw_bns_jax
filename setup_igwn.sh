@@ -13,10 +13,9 @@
 #  What this script does:
 #    1. Creates an isolated conda environment (Python 3.11)
 #    2. Installs conda-forge packages (framel, lalsuite, gwpy, ...)
-#    3. Installs pip packages (JenpyROQ, mlgw_bns, setuptools, ...)
+#    3. Installs pip packages (JAX stack, PE tools, SHARPy, mlgw_bns)
 #    4. Pins JAX to 0.4.38 (some deps try to upgrade it)
-#    5. Patches JenpyROQ for numpy 2.0 compatibility
-#    6. Registers the kernel for Jupyter
+#    5. Registers the kernel for Jupyter
 #
 #  If the script fails, delete the env and retry:
 #      conda env remove -n mlgw-bns-jax
@@ -80,10 +79,9 @@ pip install --quiet "NetKet==3.20.5"
 
 # Git-only packages
 pip install --quiet \
-    "blackjax @ git+https://github.com/gabrieledemasi/blackjax@main" \
-    "JenpyROQ @ git+https://github.com/GCArullo/JenpyROQ.git"
+    "blackjax @ git+https://github.com/gabrieledemasi/blackjax@main"
 
-# ── 4. Re-pin JAX (NetKet/SHARPy may have upgraded it) ────────────
+# ── 4. Re-pin JAX (NetKet may have upgraded it) ───────────────────
 echo ""
 echo ">>> Pinning JAX to 0.4.38 ..."
 pip install --quiet "jax[cpu]==0.4.38"
@@ -111,26 +109,15 @@ echo ""
 echo ">>> Installing mlgw_bns (editable) ..."
 pip install --quiet --no-deps -e .
 
-# ── 8. Re-pin JAX again (sharpy install may upgrade) ───────────────
+# ── 8. Re-pin JAX again (SHARPy install may upgrade) ──────────────
 pip install --quiet "jax[cpu]==0.4.38"
 
-# ── 9. Patch JenpyROQ for numpy 2.0 ───────────────────────────────
-echo ""
-echo ">>> Patching JenpyROQ for numpy 2.0 compatibility ..."
-SITE_PKGS="$(python -c 'import site; print(site.getsitepackages()[0])')"
-for f in "${SITE_PKGS}/JenpyROQ/jenpyroq.py" "${SITE_PKGS}/JenpyROQ/__main__.py"; do
-    if [ -f "$f" ] && grep -q "np\.VisibleDeprecationWarning" "$f"; then
-        sed -i 's/category=np\.VisibleDeprecationWarning/category=getattr(np, "VisibleDeprecationWarning", FutureWarning)/' "$f"
-        echo "  Patched: $f"
-    fi
-done
-
-# ── 10. Register Jupyter kernel ────────────────────────────────────
+# ── 9. Register Jupyter kernel ────────────────────────────────────
 echo ""
 echo ">>> Registering Jupyter kernel ..."
 python -m ipykernel install --user --name "${ENV_NAME}" --display-name "${ENV_NAME}"
 
-# ── 11. Verify ─────────────────────────────────────────────────────
+# ── 10. Verify ─────────────────────────────────────────────────────
 echo ""
 echo ">>> Verifying imports ..."
 python -c "
@@ -138,7 +125,6 @@ import os; os.environ['JAX_PLATFORMS'] = 'cpu'
 import jax;         print(f'  jax:        {jax.__version__}')
 import numpy as np; print(f'  numpy:      {np.__version__}')
 import scipy;       print(f'  scipy:      {scipy.__version__}')
-from JenpyROQ.jenpyroq import JenpyROQ; print('  JenpyROQ:   OK')
 import blackjax;    print('  blackjax:   OK')
 import mlgw_bns;    print(f'  mlgw_bns:   {mlgw_bns.__version__}')
 import sharpy;      print('  sharpy:     OK')
@@ -154,10 +140,10 @@ echo ""
 echo "  To use from a terminal:"
 echo "    conda activate ${ENV_NAME}"
 echo "    cd ${REPO_DIR}"
-echo "    python build_roq_basis_numpy.py"
+echo "    python roq_builder_jax.py"
 echo ""
 echo "  To build the ROQ basis from a notebook:"
-echo "    Open build_roq_basis_numpy.ipynb"
+echo "    Open build_roq_basis_jax_colab.ipynb"
 echo "    Select kernel: ${ENV_NAME}"
 echo "    Run All Cells"
 echo "============================================================"

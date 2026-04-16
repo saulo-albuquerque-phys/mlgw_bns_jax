@@ -16,8 +16,7 @@
 #   pip install "jax[cpu]==0.4.38" jaxopt optax equinox flax ripplegw corner \
 #     anesthetic seaborn "NetKet==3.20.5" PyYAML toml dacite joblib \
 #     sortedcontainers requests \
-#     "blackjax @ git+https://github.com/gabrieledemasi/blackjax@main" \
-#     "JenpyROQ @ git+https://github.com/GCArullo/JenpyROQ.git"
+#     "blackjax @ git+https://github.com/gabrieledemasi/blackjax@main"
 #   pip install -e ./_sharpy_repo && pip install -e .
 
 name: mlgw-bns-jax
@@ -66,7 +65,6 @@ dependencies:
 
     # Git-installed packages
     - "blackjax @ git+https://github.com/gabrieledemasi/blackjax@main"
-    - "JenpyROQ @ git+https://github.com/GCArullo/JenpyROQ.git"
 
     # Utilities
     - PyYAML
