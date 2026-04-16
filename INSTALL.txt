@@ -18,7 +18,6 @@ QUICK START (IGWN JupyterHub)
    The script handles all known IGWN compatibility issues automatically:
    - Creates an isolated conda env with --override-channels (avoids base conflicts)
    - Pins JAX to 0.4.38 (NetKet and SHARPy try to upgrade to 0.9.x)
-   - Patches JenpyROQ for numpy 2.0 (np.VisibleDeprecationWarning removed)
    - Pins setuptools < 71 (for pkg_resources compatibility)
    - Clones SHARPy and registers the Jupyter kernel
 
@@ -60,8 +59,7 @@ MANUAL SETUP (step by step)
 
    # Git-only packages
    pip install \
-     "blackjax @ git+https://github.com/gabrieledemasi/blackjax@main" \
-     "JenpyROQ @ git+https://github.com/GCArullo/JenpyROQ.git"
+     "blackjax @ git+https://github.com/gabrieledemasi/blackjax@main"
 
    # CRITICAL: re-pin JAX (NetKet upgrades it to 0.9.x)
    pip install "jax[cpu]==0.4.38"
@@ -109,24 +107,16 @@ KNOWN ISSUES & SOLUTIONS
    → Always re-run `pip install "jax[cpu]==0.4.38"` after installing them.
    → Use `--no-deps` for editable installs of sharpy and mlgw_bns.
 
-3. `np.VisibleDeprecationWarning` AttributeError
-   → JenpyROQ references this attribute, removed in numpy 2.0.
-   → setup_igwn.sh patches this automatically, or add before importing JenpyROQ:
-       import numpy as np
-       if not hasattr(np, "VisibleDeprecationWarning"):
-           np.VisibleDeprecationWarning = FutureWarning
-
-4. `ModuleNotFoundError: No module named 'pkg_resources'`
+3. `ModuleNotFoundError: No module named 'pkg_resources'`
    → setuptools ≥ 72 no longer bundles pkg_resources.
    → Fix: pip install "setuptools<71"
 
-5. JAX OOM during ROQ basis construction (JenpyROQ route)
-   → Use build_roq_basis_numpy.py (not build_roq_basis.py).
-   → The NumPy version avoids JAX JIT compilation overhead entirely.
-   → Alternatively, use roq_builder_jax.py (see "JAX ROQ Builder" below),
-     which manages memory with streaming batches and vmap to avoid OOM.
+4. JAX OOM during ROQ basis construction
+   → Use roq_builder_jax.py, which manages memory with streaming batches
+     and vmap to avoid OOM.  It supports checkpoint/resume so interrupted
+     builds can continue from where they left off.
 
-6. `framel` not found / cannot read .gwf files
+5. `framel` not found / cannot read .gwf files
    → framel is only available via conda-forge, not pip.
    → Already included in the conda create command above.
 
@@ -137,41 +127,20 @@ KNOWN ISSUES & SOLUTIONS
 
 There are now two independent paths for constructing the ROQ basis:
 
-  A) NumPy/JenpyROQ route (original) — uses the original mlgw_bns model
-     with the JenpyROQ library.  No JAX required at build time.
-
-  B) JAX-native route (new) — uses roq_builder_jax.py, a standalone JAX
-     reimplementation of the ROQ algorithm with JIT-compiled waveform
+  A) JAX-native route (recommended) — uses roq_builder_jax.py, a standalone
+     JAX reimplementation of the ROQ algorithm with JIT-compiled waveform
      kernels, jax.vmap batching, streaming memory management, and
      checkpoint/resume support.  Can run on GPU for faster builds.
 
-
-OPTION A: NumPy / JenpyROQ (no JAX at build time)
----------------------------------------------------
-
-   This is the original route and is recommended for low-RAM environments
-   (≤ 16 GB, e.g. IGWN JupyterHub, Google Colab free tier).
-
-   From a terminal:
-     conda activate mlgw-bns-jax
-     cd ~/mlgw_bns_jax
-     python build_roq_basis_numpy.py
-
-   From a notebook:
-     Open build_roq_basis_numpy.ipynb, select mlgw-bns-jax kernel, Run All.
-
-   Runtime: 2–6 hours depending on hardware (CPU only).
-   Output:  roq_basis_mlgw_bns_jax/ROQ_data/ (linear + quadratic interpolants)
-
-   To resume an interrupted NumPy build, see jenpyroq_resume_instructions.txt
-   or edit the `pre-basis` field in config_roq_mlgw_bns_jax_gw170817.ini:
-     corners             → Start from scratch (default)
-     pre-selected-basis  → Resume from completed pre-selection
-     pre-enriched-basis  → Resume from completed enrichment
+  B) NumPy route (legacy) — uses the original mlgw_bns model with the
+     JenpyROQ library.  No JAX required at build time.  This route is
+     kept for reference but is no longer actively maintained.  If you
+     need to use it, install JenpyROQ separately:
+       pip install "JenpyROQ @ git+https://github.com/GCArullo/JenpyROQ.git"
 
 
-OPTION B: JAX-native ROQ Builder (new)
-----------------------------------------
+JAX-native ROQ Builder (recommended)
+--------------------------------------
 
    The JAX-native builder (roq_builder_jax.py) re-implements the full ROQ
    construction algorithm using JAX.  It is designed for environments with
@@ -204,16 +173,16 @@ OPTION B: JAX-native ROQ Builder (new)
    For GPU usage, install JAX with CUDA support instead of CPU:
      pip install "jax[cuda12]"
 
-   Output:  roq_basis_mlgw_bns_jax/ROQ_data/ (same structure as NumPy route)
+   Output:  roq_basis_mlgw_bns_jax/ROQ_data/ (linear + quadratic interpolants)
 
-   The builder reads configuration from any JenpyROQ-style .ini file or
-   uses sensible defaults (23–2000 Hz, 128 s segment, tolerance 1e-4/1e-6).
+   The builder reads configuration from a .ini file or uses sensible
+   defaults (23–2000 Hz, 128 s segment, tolerance 1e-4/1e-6).
 
 
 VALIDATING AND PACKAGING THE ROQ BASIS
 ----------------------------------------
 
-   After building (either route), run the validation/packaging script:
+   After building, run the validation/packaging script:
 
      python validate_and_package_roq.py
 
@@ -228,27 +197,24 @@ VALIDATING AND PACKAGING THE ROQ BASIS
 FILE REFERENCE
 --------------
 
-   ROQ Build (NumPy / JenpyROQ — no JAX):
-     build_roq_basis_numpy.py              Standalone script (NumPy)
-     build_roq_basis_numpy.ipynb           Notebook (with Colab/IGWN setup)
-     mlgw_bns_roq_wrapper.py               JenpyROQ wrapper (NumPy mlgw_bns)
-
-   ROQ Build (JAX — JenpyROQ wrapper):
-     build_roq_basis.py                    Script using JAX via JenpyROQ
-     build_roq_basis.ipynb                 Notebook using JAX via JenpyROQ
-     mlgw_bns_jax_roq_wrapper.py           JenpyROQ wrapper (JAX model)
-
-   ROQ Build (JAX-native builder — new):
+   ROQ Build (JAX-native builder):
      roq_builder_jax.py                    Standalone JAX ROQ builder
      build_roq_basis_jax_colab.ipynb       GPU-accelerated Colab notebook
      tests/test_roq_builder_jax.py         Unit and integration tests
+
+   ROQ Build (NumPy / JenpyROQ — legacy):
+     build_roq_basis_numpy.py              Standalone script (NumPy)
+     build_roq_basis_numpy.ipynb           Notebook (with Colab/IGWN setup)
+     mlgw_bns_roq_wrapper.py               JenpyROQ wrapper (NumPy mlgw_bns)
+     build_roq_basis.py                    Script using JAX via JenpyROQ
+     build_roq_basis.ipynb                 Notebook using JAX via JenpyROQ
+     mlgw_bns_jax_roq_wrapper.py           JenpyROQ wrapper (JAX model)
 
    ROQ Validation & Packaging:
      validate_and_package_roq.py           Post-build validation + zip packaging
 
    ROQ Configuration:
-     config_roq_mlgw_bns_jax_gw170817.ini JenpyROQ / ROQ builder config
-     jenpyroq_resume_instructions.txt      Resume instructions for JenpyROQ
+     config_roq_mlgw_bns_jax_gw170817.ini ROQ builder config
 
    Parameter Estimation:
      roq_pe_mlgw_bns_jax.ipynb             ROQ PE notebook (SHARPy SMC + JAX)
