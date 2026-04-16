@@ -909,11 +909,53 @@ def empirical_interpolation(
 # Full build pipeline
 # ─────────────────────────────────────────────────────────────────────
 
+def _save_phase_status(out_dir: Path, kind: str, phase: str, info: dict | None = None):
+    """Write a JSON marker recording that *phase* completed successfully."""
+    status_path = out_dir / f"_status_{kind}.json"
+    status: dict = {}
+    if status_path.exists():
+        with open(status_path) as f:
+            status = json.load(f)
+    status[phase] = {
+        "completed": True,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        **(info or {}),
+    }
+    with open(status_path, "w") as f:
+        json.dump(status, f, indent=2)
+
+
+def _phase_completed(out_dir: Path, kind: str, phase: str) -> bool:
+    """Return True if *phase* was already marked as completed."""
+    status_path = out_dir / f"_status_{kind}.json"
+    if not status_path.exists():
+        return False
+    with open(status_path) as f:
+        status = json.load(f)
+    return status.get(phase, {}).get("completed", False)
+
+
 def build_roq_basis(
     cfg: ROQConfig,
     kind: str = "linear",
+    resume: bool = True,
 ) -> dict:
     """Full pipeline: JIT warm-up → pre-selection → enrichment → EIM.
+
+    When ``resume=True`` (default), each phase checks for existing
+    checkpoint files on disk.  If a phase's outputs already exist **and**
+    its status marker says it completed successfully, that phase is
+    skipped and the saved data are loaded instead.  This allows the
+    build to be interrupted and restarted without losing progress.
+
+    Resume points
+    -------------
+    * **After Phase 1 (pre-selection):**
+      ``preselection_{kind}_basis.npy`` + status marker.
+    * **After Phase 2 (enrichment):**
+      ``basis_{kind}.npy`` + status marker.
+    * **After Phase 3 (EIM):**
+      ``empirical_nodes_{kind}.npy`` + status marker.
 
     Parameters
     ----------
@@ -921,6 +963,8 @@ def build_roq_basis(
         Configuration.
     kind : str
         ``"linear"`` or ``"quadratic"``.
+    resume : bool
+        If True, skip phases whose checkpoints already exist.
 
     Returns
     -------
@@ -935,6 +979,9 @@ def build_roq_basis(
     frequencies = cfg.frequencies
     delta_f = cfg.delta_f
 
+    out_dir = Path(cfg.output_dir) / "ROQ_data" / kind
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     if cfg.verbose:
         print(f"\n{'='*65}")
         print(f"  Building {kind.upper()} ROQ basis")
@@ -943,8 +990,30 @@ def build_roq_basis(
         print(f"  Frequency points: {cfg.n_freq}")
         print(f"  Tolerance: {tolerance:.1e}")
         print(f"  Pre-basis size target: {n_pre}")
+        print(f"  Resume mode: {'ON' if resume else 'OFF'}")
 
     t_start = time.time()
+
+    # ── Check if the entire build is already done ───────────────────
+    if resume and _phase_completed(out_dir, kind, "eim"):
+        if cfg.verbose:
+            print(f"\n  ✓ {kind.upper()} basis already fully built — loading from disk")
+        basis = np.load(out_dir / f"basis_{kind}.npy")
+        basis_params = np.load(out_dir / f"basis_waveform_params_{kind}.npy")
+        nodes = np.load(out_dir / f"empirical_nodes_{kind}.npy")
+        interpolant = np.load(out_dir / f"basis_interpolant_{kind}.npy")
+        empirical_freqs = np.load(out_dir / f"empirical_frequencies_{kind}.npy")
+        err_path = out_dir / f"preselection_{kind}_basis_residual_modula.npy"
+        errors_history = np.load(err_path) if err_path.exists() else np.array([])
+        return {
+            "basis": basis,
+            "basis_params": basis_params,
+            "nodes": nodes,
+            "interpolant": interpolant,
+            "frequencies": frequencies,
+            "empirical_frequencies": empirical_freqs,
+            "errors_history": errors_history,
+        }
 
     # ── Load model + JIT compile ────────────────────────────────────
     if cfg.verbose:
@@ -959,55 +1028,75 @@ def build_roq_basis(
     )
 
     # ── Phase 1: Pre-selection (streaming greedy) ───────────────────
-    if cfg.verbose:
-        print(f"\n  Phase 1: Pre-selection (streaming)")
+    if resume and _phase_completed(out_dir, kind, "preselection"):
+        if cfg.verbose:
+            print(f"\n  Phase 1: Pre-selection — RESUMING from checkpoint")
+        basis = np.load(out_dir / f"preselection_{kind}_basis.npy")
+        basis_params = np.load(out_dir / f"preselection_{kind}_basis_waveform_params.npy")
+        err_path = out_dir / f"preselection_{kind}_basis_residual_modula.npy"
+        errors_history = np.load(err_path) if err_path.exists() else np.array([])
+        if cfg.verbose:
+            print(f"    Loaded pre-selection basis: {len(basis)} vectors")
+    else:
+        if cfg.verbose:
+            print(f"\n  Phase 1: Pre-selection (streaming)")
 
-    rng = np.random.default_rng(cfg.random_seed)
+        rng = np.random.default_rng(cfg.random_seed)
 
-    corner_p = corner_parameters(cfg)
-    n_random_seed = max(0, cfg.n_pre_basis_search_iter * n_pre - len(corner_p))
-    random_seed_p = sample_parameters(rng, n_random_seed, cfg)
-    pre_params = np.vstack([corner_p, random_seed_p])
+        corner_p = corner_parameters(cfg)
+        n_random_seed = max(0, cfg.n_pre_basis_search_iter * n_pre - len(corner_p))
+        random_seed_p = sample_parameters(rng, n_random_seed, cfg)
+        pre_params = np.vstack([corner_p, random_seed_p])
 
-    if cfg.verbose:
-        print(f"    Pre-selection pool: {len(pre_params)} parameter sets "
-              f"({len(corner_p)} corners + {n_random_seed} random)")
+        if cfg.verbose:
+            print(f"    Pre-selection pool: {len(pre_params)} parameter sets "
+                  f"({len(corner_p)} corners + {n_random_seed} random)")
 
-    basis, basis_params, errors_history = greedy_basis_streaming(
-        pre_params, predict_fn, frequencies, delta_f, tolerance,
-        max_basis=n_pre,
-        quadratic=quadratic,
-        batch_size=cfg.waveform_batch_size,
-        proj_batch=cfg.projection_batch_size,
-        verbose=cfg.verbose,
-        precompiled=precompiled,
-    )
+        basis, basis_params, errors_history = greedy_basis_streaming(
+            pre_params, predict_fn, frequencies, delta_f, tolerance,
+            max_basis=n_pre,
+            quadratic=quadratic,
+            batch_size=cfg.waveform_batch_size,
+            proj_batch=cfg.projection_batch_size,
+            verbose=cfg.verbose,
+            precompiled=precompiled,
+        )
 
-    # Save pre-selection checkpoint
-    out_dir = Path(cfg.output_dir) / "ROQ_data" / kind
-    out_dir.mkdir(parents=True, exist_ok=True)
-    np.save(out_dir / f"preselection_{kind}_basis.npy", basis)
-    np.save(out_dir / f"preselection_{kind}_basis_waveform_params.npy", basis_params)
-    np.save(out_dir / f"preselection_{kind}_basis_residual_modula.npy", errors_history)
-    if cfg.verbose:
-        print(f"    Saved pre-selection checkpoint to {out_dir}")
+        # Save pre-selection checkpoint
+        np.save(out_dir / f"preselection_{kind}_basis.npy", basis)
+        np.save(out_dir / f"preselection_{kind}_basis_waveform_params.npy", basis_params)
+        np.save(out_dir / f"preselection_{kind}_basis_residual_modula.npy", errors_history)
+        _save_phase_status(out_dir, kind, "preselection",
+                           {"basis_size": int(len(basis))})
+        if cfg.verbose:
+            print(f"    Saved pre-selection checkpoint to {out_dir}")
 
     # ── Phase 2: Enrichment (streaming) ─────────────────────────────
-    if cfg.verbose:
-        print(f"\n  Phase 2: Enrichment (streaming)")
+    if resume and _phase_completed(out_dir, kind, "enrichment"):
+        if cfg.verbose:
+            print(f"\n  Phase 2: Enrichment — RESUMING from checkpoint")
+        basis = np.load(out_dir / f"basis_{kind}.npy")
+        basis_params = np.load(out_dir / f"basis_waveform_params_{kind}.npy")
+        if cfg.verbose:
+            print(f"    Loaded enriched basis: {len(basis)} vectors")
+    else:
+        if cfg.verbose:
+            print(f"\n  Phase 2: Enrichment (streaming)")
 
-    rng_enrich = np.random.default_rng(cfg.random_seed + 2000)
-    basis, basis_params = enrich_basis(
-        basis, basis_params, predict_fn, frequencies, cfg,
-        tolerance=tolerance, quadratic=quadratic, rng=rng_enrich,
-        precompiled=precompiled,
-    )
+        rng_enrich = np.random.default_rng(cfg.random_seed + 2000)
+        basis, basis_params = enrich_basis(
+            basis, basis_params, predict_fn, frequencies, cfg,
+            tolerance=tolerance, quadratic=quadratic, rng=rng_enrich,
+            precompiled=precompiled,
+        )
 
-    # Save enriched basis checkpoint
-    np.save(out_dir / f"basis_{kind}.npy", basis)
-    np.save(out_dir / f"basis_waveform_params_{kind}.npy", basis_params)
-    if cfg.verbose:
-        print(f"    Saved enriched basis to {out_dir}")
+        # Save enriched basis checkpoint
+        np.save(out_dir / f"basis_{kind}.npy", basis)
+        np.save(out_dir / f"basis_waveform_params_{kind}.npy", basis_params)
+        _save_phase_status(out_dir, kind, "enrichment",
+                           {"basis_size": int(len(basis))})
+        if cfg.verbose:
+            print(f"    Saved enriched basis to {out_dir}")
 
     # ── Phase 3: EIM ────────────────────────────────────────────────
     if cfg.verbose:
@@ -1019,6 +1108,8 @@ def build_roq_basis(
     np.save(out_dir / f"empirical_nodes_{kind}.npy", nodes)
     np.save(out_dir / f"empirical_frequencies_{kind}.npy", empirical_freqs)
     np.save(out_dir / f"basis_interpolant_{kind}.npy", interpolant)
+    _save_phase_status(out_dir, kind, "eim",
+                       {"n_nodes": int(len(nodes))})
 
     t_total = time.time() - t_start
     if cfg.verbose:
@@ -1129,9 +1220,16 @@ def validate_basis(
 # ─────────────────────────────────────────────────────────────────────
 
 def main():
-    """Main entry point: build linear + quadratic ROQ bases."""
-    config_file = (sys.argv[1] if len(sys.argv) > 1
-                   else "config_roq_mlgw_bns_jax_gw170817.ini")
+    """Main entry point: build linear + quadratic ROQ bases.
+
+    Supports ``--no-resume`` flag to force a fresh build.  By default,
+    completed phases and completed basis kinds (linear / quadratic) are
+    detected from checkpoint files on disk and skipped.
+    """
+    # ── CLI parsing ─────────────────────────────────────────────────
+    resume = "--no-resume" not in sys.argv
+    argv_rest = [a for a in sys.argv[1:] if a != "--no-resume"]
+    config_file = argv_rest[0] if argv_rest else "config_roq_mlgw_bns_jax_gw170817.ini"
 
     if os.path.isfile(config_file):
         print(f"Loading config from {config_file}")
@@ -1151,11 +1249,12 @@ def main():
     print(f"  Training cycles  : {cfg.training_set_sizes}")
     print(f"  vmap batch size  : {cfg.waveform_batch_size}")
     print(f"  proj batch size  : {cfg.projection_batch_size}")
+    print(f"  Resume mode      : {'ON' if resume else 'OFF'}")
 
     t0 = time.time()
 
     # ── LINEAR ──────────────────────────────────────────────────────
-    results_lin = build_roq_basis(cfg, kind="linear")
+    results_lin = build_roq_basis(cfg, kind="linear", resume=resume)
 
     predict_fn = _load_predictor(cfg.model_path)
     precompiled = warmup_jit(
@@ -1171,7 +1270,7 @@ def main():
     gc.collect()
 
     # ── QUADRATIC ───────────────────────────────────────────────────
-    results_qua = build_roq_basis(cfg, kind="quadratic")
+    results_qua = build_roq_basis(cfg, kind="quadratic", resume=resume)
 
     errors_qua, qua_ok = validate_basis(
         results_qua, predict_fn, cfg,

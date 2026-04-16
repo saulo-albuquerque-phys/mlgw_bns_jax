@@ -9,6 +9,7 @@ and then run a small end-to-end build to confirm correctness.
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -37,6 +38,8 @@ from roq_builder_jax import (
     build_roq_basis,
     warmup_jit,
     _load_predictor,
+    _save_phase_status,
+    _phase_completed,
 )
 
 
@@ -322,6 +325,83 @@ class TestConfigFromIni:
             assert cfg.f_max == 2000.0
             assert cfg.seglen == 128.0
             assert cfg.tolerance_lin == 1e-4
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Resume / checkpoint tests
+# ─────────────────────────────────────────────────────────────────────
+
+class TestPhaseStatus:
+    """Test the _save_phase_status / _phase_completed helpers."""
+
+    def test_save_and_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            assert not _phase_completed(p, "linear", "preselection")
+            _save_phase_status(p, "linear", "preselection", {"basis_size": 42})
+            assert _phase_completed(p, "linear", "preselection")
+            assert not _phase_completed(p, "linear", "enrichment")
+
+    def test_multiple_phases(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            _save_phase_status(p, "linear", "preselection")
+            _save_phase_status(p, "linear", "enrichment")
+            _save_phase_status(p, "linear", "eim")
+            assert _phase_completed(p, "linear", "preselection")
+            assert _phase_completed(p, "linear", "enrichment")
+            assert _phase_completed(p, "linear", "eim")
+            # quadratic should be independent
+            assert not _phase_completed(p, "quadratic", "preselection")
+
+    def test_nonexistent_dir(self):
+        p = Path("/tmp/roq_test_does_not_exist_xyz")
+        assert not _phase_completed(p, "linear", "preselection")
+
+
+@pytest.mark.skipif(not HAS_MODEL, reason="mlgw_bns_jax_model.h5 not found")
+class TestResume:
+    def test_resume_skips_completed_phases(self, small_cfg):
+        """Build once, then resume — second call should reload from disk."""
+        # First build
+        results1 = build_roq_basis(small_cfg, kind="linear", resume=False)
+        basis_size_1 = len(results1["basis"])
+        assert basis_size_1 > 0
+
+        # Status files should exist
+        out_dir = Path(small_cfg.output_dir) / "ROQ_data" / "linear"
+        assert _phase_completed(out_dir, "linear", "preselection")
+        assert _phase_completed(out_dir, "linear", "enrichment")
+        assert _phase_completed(out_dir, "linear", "eim")
+
+        # Resume should load from disk and return same results
+        results2 = build_roq_basis(small_cfg, kind="linear", resume=True)
+        np.testing.assert_array_equal(results1["basis"], results2["basis"])
+        np.testing.assert_array_equal(results1["nodes"], results2["nodes"])
+
+    def test_resume_after_preselection_only(self, small_cfg):
+        """Simulate crash after preselection: only mark preselection done."""
+        # Do a full build first to generate checkpoint files
+        results_full = build_roq_basis(small_cfg, kind="linear", resume=False)
+
+        # Now clear enrichment + eim markers to simulate crash after preselection
+        out_dir = Path(small_cfg.output_dir) / "ROQ_data" / "linear"
+        import json as _json
+        status_path = out_dir / "_status_linear.json"
+        with open(status_path) as f:
+            status = _json.load(f)
+        # Keep only preselection
+        status = {"preselection": status["preselection"]}
+        with open(status_path, "w") as f:
+            _json.dump(status, f)
+
+        # Resume should redo enrichment + EIM but skip preselection
+        results_resumed = build_roq_basis(small_cfg, kind="linear", resume=True)
+        assert len(results_resumed["basis"]) > 0
+        assert len(results_resumed["nodes"]) > 0
+        # Preselection basis should be the same since it was loaded
+        pre_basis_orig = np.load(out_dir / "preselection_linear_basis.npy")
+        assert pre_basis_orig.shape[0] > 0
 
 
 if __name__ == "__main__":
