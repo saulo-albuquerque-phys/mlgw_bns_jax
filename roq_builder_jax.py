@@ -4,8 +4,19 @@ JAX-based Reduced Order Quadrature (ROQ) basis builder.
 
 This module re-implements the ROQ basis construction algorithm used by
 JenpyROQ but relies entirely on JAX for waveform generation and linear
-algebra, exploiting ``jax.vmap`` for batch parallelism and ``jax.jit``
-for compiled kernel performance.
+algebra.  It uses ``jax.jit`` for compiled waveform kernels and
+``jax.vmap`` (with small batch sizes) for parallelism.
+
+**Key design decisions for memory efficiency:**
+
+- Waveform kernels are **JIT-compiled once** (warm-up call) before any
+  batch evaluation.  Subsequent calls reuse the compiled XLA code.
+- ``vmap`` batch size is kept small (default 8) so that peak memory for
+  253 k frequency points stays under ~2 GB of intermediates.
+- Training sets are **never materialised entirely** in RAM.  Both the
+  greedy pre-selection and enrichment phases stream through waveforms in
+  small batches, keeping only the current basis (~100 × 253 k × 16 B ≈
+  400 MB) and one batch at a time in memory.
 
 Algorithm
 ---------
@@ -13,12 +24,13 @@ The construction follows Field et al., Phys. Rev. X 4, 031006 (2014)
 and the JenpyROQ implementation:
 
 1. **Pre-selection** (corners + random seed): generate a small initial
-   training set, normalise the waveforms, and greedily select basis
-   vectors by choosing the waveform with the largest projection error.
+   training set in streaming batches, normalise the waveforms, and
+   greedily select basis vectors by choosing the waveform with the
+   largest projection error.
 
 2. **Enrichment** (iterative cycles): generate increasingly large fresh
-   training sets and augment the basis with any waveform whose
-   representation error exceeds the tolerance.
+   training sets (streamed) and augment the basis with any waveform
+   whose representation error exceeds the tolerance.
 
 3. **Empirical Interpolation Method (EIM)**: given the reduced basis,
    identify a sparse set of *empirical nodes* (frequency indices) and
@@ -47,6 +59,7 @@ Auto-generated JAX ROQ builder for the mlgw_bns_jax project.
 from __future__ import annotations
 
 import configparser
+import gc
 import json
 import os
 import sys
@@ -110,8 +123,12 @@ class ROQConfig:
     random_seed: int = 170817
     verbose: int = 1
 
-    # Batching
-    waveform_batch_size: int = 512
+    # Batching  –  keep small for 253 k-point grids to avoid OOM
+    waveform_batch_size: int = 8
+
+    # How many waveforms to hold in RAM at once for projection-error
+    # computation during streaming greedy / enrichment.
+    projection_batch_size: int = 200
 
     @property
     def delta_f(self) -> float:
@@ -164,7 +181,7 @@ class ROQConfig:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Waveform generation (JAX, vmap-ready)
+# Waveform generation (JAX)
 # ─────────────────────────────────────────────────────────────────────
 
 def _load_predictor(model_path: str):
@@ -218,16 +235,105 @@ def corner_parameters(cfg: ROQConfig) -> np.ndarray:
     return np.array(corners)
 
 
+def _build_single_waveform_fn(predict_fn, freqs_jax):
+    """Build and return the JIT-compiled single-waveform function.
+
+    Parameters
+    ----------
+    predict_fn : callable
+        Raw (un-jitted) predictor from ``load_predict``.
+    freqs_jax : jnp.ndarray
+        Frequency grid (frozen).
+
+    Returns
+    -------
+    single_fn : callable
+        A JIT-compiled function ``p8 -> hp`` where ``p8`` is shape (8,)
+        and ``hp`` is shape ``(n_freq,)`` complex128.
+    """
+    @jax.jit
+    def _single(p8):
+        mc  = p8[0]; q    = p8[1]
+        s1z = p8[2]; s2z  = p8[3]
+        lam1 = p8[4]; lam2 = p8[5]
+        iota = p8[6]; phiref = p8[7]
+        m1 = mc * (1.0 + q) ** 0.2 * q ** (-0.6)
+        m2 = mc * (1.0 + q) ** 0.2 * q ** 0.4
+        total_mass = m1 + m2
+        mlgw_params = jnp.array([q, lam1, lam2, s1z, s2z])
+        hp, _ = predict_fn(
+            mlgw_params, freqs_jax,
+            total_mass=total_mass,
+            distance_mpc=jnp.array(1.0),
+            inclination=iota,
+        )
+        hp = hp * jnp.exp(-1j * phiref)
+        return hp
+    return _single
+
+
+def _build_vmap_waveform_fn(predict_fn, freqs_jax, batch_size: int):
+    """Build a vmap-batched waveform function with fixed batch_size.
+
+    The returned function accepts a padded array of shape
+    ``(batch_size, 8)`` and returns ``(batch_size, n_freq)``.
+    """
+    single_fn = _build_single_waveform_fn(predict_fn, freqs_jax)
+    return jax.jit(jax.vmap(single_fn))
+
+
+def warmup_jit(predict_fn, frequencies: np.ndarray, batch_size: int,
+               verbose: int = 1) -> tuple:
+    """JIT-compile both the single-waveform and vmap-batched functions.
+
+    Performs a throw-away evaluation so that all XLA compilation happens
+    here.  Subsequent calls reuse the cached compiled code.
+
+    Returns
+    -------
+    single_fn, batch_fn : callables
+        JIT-compiled single and batch waveform generators.
+    """
+    freqs_jax = jnp.array(frequencies, dtype=jnp.float64)
+
+    single_fn = _build_single_waveform_fn(predict_fn, freqs_jax)
+    batch_fn = _build_vmap_waveform_fn(predict_fn, freqs_jax, batch_size)
+
+    # ── Warm-up: compile single ─────────────────────────────────────
+    if verbose:
+        print("    JIT warm-up: compiling single-waveform kernel...")
+    t0 = time.time()
+    dummy_p = jnp.array([1.19, 1.0, 0.0, 0.0, 300.0, 300.0, 0.0, 0.0])
+    _ = single_fn(dummy_p).block_until_ready()
+    if verbose:
+        print(f"    ✓ single compiled in {time.time() - t0:.1f}s")
+
+    # ── Warm-up: compile vmap batch ─────────────────────────────────
+    if verbose:
+        print(f"    JIT warm-up: compiling vmap batch (size={batch_size}) kernel...")
+    t0 = time.time()
+    dummy_batch = jnp.tile(dummy_p, (batch_size, 1))
+    _ = batch_fn(dummy_batch).block_until_ready()
+    if verbose:
+        print(f"    ✓ batch compiled in {time.time() - t0:.1f}s")
+
+    return single_fn, batch_fn
+
+
 def generate_waveforms_batch(
     predict_fn,
     params_batch: np.ndarray,
     frequencies: np.ndarray,
     distance_mpc: float = 1.0,
-    batch_size: int = 512,
+    batch_size: int = 8,
+    _precompiled: tuple | None = None,
 ) -> np.ndarray:
-    """Generate normalised h_plus waveforms for a batch of parameters.
+    """Generate h_plus waveforms for a batch of parameters.
 
-    Uses vmap for parallelism within each sub-batch.
+    Uses a pre-compiled vmap kernel with small ``batch_size`` to keep
+    peak memory low.  If ``_precompiled`` is provided it must be
+    ``(single_fn, batch_fn)`` from ``warmup_jit`` and will be reused
+    without re-tracing.
 
     Parameters
     ----------
@@ -238,34 +344,24 @@ def generate_waveforms_batch(
     frequencies : np.ndarray, shape ``(n_freq,)``
         Frequency grid in Hz.
     distance_mpc : float
-        Reference distance (doesn't matter much since we normalise).
+        Reference distance (irrelevant since we normalise later).
     batch_size : int
-        Number of waveforms to evaluate in parallel via vmap.
+        vmap width.  8–16 is safe for 253 k-point grids on 15 GB RAM.
+    _precompiled : tuple or None
+        ``(single_fn, batch_fn)`` from ``warmup_jit``.
 
     Returns
     -------
     waveforms : np.ndarray, shape ``(n, n_freq)``, complex128
-        Normalised h_plus waveforms.
     """
     n = len(params_batch)
     freqs_jax = jnp.array(frequencies, dtype=jnp.float64)
 
-    def _single_waveform(p8):
-        mc, q, s1z, s2z, lam1, lam2, iota, phiref = p8
-        m1, m2 = mc * (1.0 + q) ** 0.2 * q ** (-0.6), mc * (1.0 + q) ** 0.2 * q ** 0.4
-        total_mass = m1 + m2
-        mlgw_params = jnp.array([q, lam1, lam2, s1z, s2z])
-        hp, _ = predict_fn(
-            mlgw_params, freqs_jax,
-            total_mass=total_mass,
-            distance_mpc=jnp.array(distance_mpc),
-            inclination=iota,
-        )
-        # Apply phase factor
-        hp = hp * jnp.exp(-1j * phiref)
-        return hp
-
-    _batch_waveform = jax.jit(jax.vmap(_single_waveform))
+    if _precompiled is not None:
+        single_fn, batch_fn = _precompiled
+    else:
+        single_fn = _build_single_waveform_fn(predict_fn, freqs_jax)
+        batch_fn = _build_vmap_waveform_fn(predict_fn, freqs_jax, batch_size)
 
     all_waveforms = []
     for start in range(0, n, batch_size):
@@ -273,16 +369,22 @@ def generate_waveforms_batch(
         chunk = params_batch[start:end]
         actual_size = len(chunk)
 
-        # Pad to batch_size for consistent JIT shapes
-        if actual_size < batch_size:
-            pad = np.zeros((batch_size - actual_size, 8))
-            # Repeat last valid entry for padding
-            pad[:] = chunk[-1]
-            chunk = np.concatenate([chunk, pad], axis=0)
+        if actual_size == batch_size:
+            chunk_jax = jnp.array(chunk, dtype=jnp.float64)
+            hp_batch = batch_fn(chunk_jax)
+            hp_np = np.array(hp_batch, dtype=np.complex128)
+        elif actual_size > 1:
+            # Pad to batch_size so we reuse the same compiled kernel
+            pad = np.tile(chunk[-1:], (batch_size - actual_size, 1))
+            padded = np.concatenate([chunk, pad], axis=0)
+            chunk_jax = jnp.array(padded, dtype=jnp.float64)
+            hp_batch = batch_fn(chunk_jax)
+            hp_np = np.array(hp_batch[:actual_size], dtype=np.complex128)
+        else:
+            # Single waveform – use the single-call kernel
+            hp = single_fn(jnp.array(chunk[0], dtype=jnp.float64))
+            hp_np = np.array(hp, dtype=np.complex128).reshape(1, -1)
 
-        chunk_jax = jnp.array(chunk, dtype=jnp.float64)
-        hp_batch = _batch_waveform(chunk_jax)
-        hp_np = np.array(hp_batch[:actual_size], dtype=np.complex128)
         all_waveforms.append(hp_np)
 
     return np.concatenate(all_waveforms, axis=0)
@@ -333,22 +435,14 @@ def projection_error(
     errors : np.ndarray, shape ``(n,)``
         Squared projection errors.
     """
-    # Overlap matrix: (n, m) = <h_i | e_j>
-    overlaps = delta_f * (np.conj(h) @ basis.T.conj())  # wrong
-    # Actually: <h_i | e_j> = delta_f * sum_k conj(h_i[k]) * e_j[k]
-    # Wait, for complex inner product we use h . conj(e):
-    # <h|e> = delta_f * sum(conj(h) * e)
-    # But for projection onto orthonormal basis: P h = sum_j <e_j|h> e_j
-    # <e_j|h> = delta_f * sum(conj(e_j) * h)
-    overlaps = delta_f * (h @ np.conj(basis).T)  # shape (n, m); overlaps[i,j] = <e_j | h_i>
+    # <e_j | h_i> = delta_f * sum(conj(e_j) * h_i)
+    overlaps = delta_f * (h @ np.conj(basis).T)  # shape (n, m)
 
     # ||P h||^2 = sum_j |<e_j|h>|^2
     proj_norm_sq = np.sum(np.abs(overlaps) ** 2, axis=-1)
 
-    # ||h||^2 = 1 (already normalised)
-    # error = ||h||^2 - ||P h||^2 = 1 - proj_norm_sq
+    # error = ||h||^2 - ||P h||^2 = 1 - proj_norm_sq  (h normalised)
     errors = 1.0 - proj_norm_sq
-    # Clamp to avoid numerical negatives
     return np.maximum(errors, 0.0)
 
 
@@ -357,7 +451,7 @@ def projection_error_jax(
     basis: jnp.ndarray,
     delta_f: float,
 ) -> jnp.ndarray:
-    """JAX version of projection_error for GPU/JIT acceleration.
+    """JAX version of projection_error for JIT acceleration.
 
     Parameters
     ----------
@@ -369,8 +463,7 @@ def projection_error_jax(
     -------
     errors : jnp.ndarray, shape ``(n,)``
     """
-    # <e_j | h_i> = delta_f * sum_k conj(e_j[k]) * h_i[k]
-    overlaps = delta_f * (h_batch @ jnp.conj(basis).T)  # (n, m)
+    overlaps = delta_f * (h_batch @ jnp.conj(basis).T)
     proj_norm_sq = jnp.sum(jnp.abs(overlaps) ** 2, axis=-1)
     return jnp.maximum(1.0 - proj_norm_sq, 0.0)
 
@@ -397,7 +490,6 @@ def gram_schmidt_add(basis: np.ndarray, new_vec: np.ndarray, delta_f: float) -> 
     """
     v = new_vec.copy()
     for e in basis:
-        # <e|v> = delta_f * sum(conj(e) * v)
         overlap = delta_f * np.sum(np.conj(e) * v)
         v = v - overlap * e
 
@@ -417,7 +509,7 @@ def gram_schmidt_add(basis: np.ndarray, new_vec: np.ndarray, delta_f: float) -> 
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Greedy basis construction
+# Greedy basis construction  (in-memory, for small training sets)
 # ─────────────────────────────────────────────────────────────────────
 
 def greedy_basis(
@@ -428,7 +520,7 @@ def greedy_basis(
     max_basis: int = 500,
     verbose: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Greedy selection of reduced basis vectors.
+    """Greedy selection of reduced basis vectors (in-memory version).
 
     Parameters
     ----------
@@ -458,7 +550,6 @@ def greedy_basis(
     if n == 0:
         raise ValueError("No waveforms to build basis from.")
 
-    # Start with first waveform
     basis = np.empty((0, k), dtype=waveforms.dtype)
     basis = gram_schmidt_add(basis, waveforms[0], delta_f)
     basis_params = [params[0]]
@@ -469,15 +560,9 @@ def greedy_basis(
               f"tolerance={tolerance:.1e}")
 
     for step in range(1, max_basis):
-        # Compute projection errors for all training waveforms
-        # Use JAX for speed on large batches
-        basis_jax = jnp.array(basis)
-        wf_jax = jnp.array(waveforms)
-
-        errors = np.array(_projection_error_jax_jit(wf_jax, basis_jax, delta_f))
-
-        max_err = errors.max()
-        max_idx = errors.argmax()
+        errors = projection_error(waveforms, basis, delta_f)
+        max_err = float(errors.max())
+        max_idx = int(errors.argmax())
         errors_history.append(max_err)
 
         if verbose:
@@ -490,10 +575,8 @@ def greedy_basis(
                       f"(error {max_err:.2e} < {tolerance:.1e})")
             break
 
-        # Add worst-represented waveform to the basis
         basis = gram_schmidt_add(basis, waveforms[max_idx], delta_f)
         basis_params.append(params[max_idx])
-
     else:
         if verbose:
             print(f"  ⚠ Reached max basis size {max_basis} without convergence "
@@ -503,7 +586,136 @@ def greedy_basis(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Enrichment
+# Streaming greedy basis  (memory-efficient, for large training sets)
+# ─────────────────────────────────────────────────────────────────────
+
+def greedy_basis_streaming(
+    all_params: np.ndarray,
+    predict_fn,
+    frequencies: np.ndarray,
+    delta_f: float,
+    tolerance: float,
+    max_basis: int = 500,
+    quadratic: bool = False,
+    batch_size: int = 8,
+    proj_batch: int = 200,
+    verbose: int = 1,
+    precompiled: tuple | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Greedy basis construction that streams waveforms in batches.
+
+    On each greedy iteration the **entire** training parameter set is
+    scanned in batches of ``proj_batch`` waveforms.  Only the current
+    basis and one batch of waveforms are in RAM at the same time.
+
+    Parameters
+    ----------
+    all_params : np.ndarray, shape ``(n, 8)``
+        Full parameter set to scan.
+    predict_fn : callable
+        JAX predict function.
+    frequencies : np.ndarray
+        Frequency grid.
+    delta_f : float
+        Frequency spacing.
+    tolerance : float
+        Greedy stopping tolerance.
+    max_basis : int
+        Maximum number of basis vectors.
+    quadratic : bool
+        If True, operate on |h|^2 instead of h.
+    batch_size : int
+        vmap batch width for waveform generation.
+    proj_batch : int
+        Number of waveforms to generate and project at once.
+    verbose : int
+        Verbosity level.
+    precompiled : tuple or None
+        ``(single_fn, batch_fn)`` from ``warmup_jit``.
+
+    Returns
+    -------
+    basis, basis_params, errors_history
+    """
+    n = len(all_params)
+    k = len(frequencies)
+
+    # Seed with first waveform
+    first_wf = generate_waveforms_batch(
+        predict_fn, all_params[:1], frequencies,
+        batch_size=batch_size, _precompiled=precompiled,
+    )
+    if quadratic:
+        first_wf = np.abs(first_wf) ** 2
+    first_wf = normalise(first_wf, delta_f)
+
+    basis = np.empty((0, k), dtype=first_wf.dtype)
+    basis = gram_schmidt_add(basis, first_wf[0], delta_f)
+    basis_params_list = [all_params[0]]
+    errors_history = []
+
+    if verbose:
+        print(f"  Streaming greedy: {n} params, tolerance={tolerance:.1e}, "
+              f"proj_batch={proj_batch}")
+
+    for step in range(1, max_basis):
+        t_step = time.time()
+        global_max_err = 0.0
+        global_max_wf = None
+        global_max_p = None
+
+        # Scan all training params in batches
+        for bstart in range(0, n, proj_batch):
+            bend = min(bstart + proj_batch, n)
+            chunk_params = all_params[bstart:bend]
+
+            # Generate waveforms for this chunk
+            chunk_wf = generate_waveforms_batch(
+                predict_fn, chunk_params, frequencies,
+                batch_size=batch_size, _precompiled=precompiled,
+            )
+            if quadratic:
+                chunk_wf = np.abs(chunk_wf) ** 2
+            chunk_wf = normalise(chunk_wf, delta_f)
+
+            # Project and find worst
+            errs = projection_error(chunk_wf, basis, delta_f)
+            local_max_idx = int(errs.argmax())
+            local_max_err = float(errs[local_max_idx])
+
+            if local_max_err > global_max_err:
+                global_max_err = local_max_err
+                global_max_wf = chunk_wf[local_max_idx].copy()
+                global_max_p = chunk_params[local_max_idx].copy()
+
+            del chunk_wf, errs
+            gc.collect()
+
+        errors_history.append(global_max_err)
+        elapsed = time.time() - t_step
+
+        if verbose:
+            print(f"    Step {step:4d}: basis={len(basis)}, "
+                  f"max_err={global_max_err:.6e}  ({elapsed:.1f}s)")
+
+        if global_max_err < tolerance:
+            if verbose:
+                print(f"  ✓ Converged: {len(basis)} basis vectors "
+                      f"(error {global_max_err:.2e} < {tolerance:.1e})")
+            break
+
+        basis = gram_schmidt_add(basis, global_max_wf, delta_f)
+        basis_params_list.append(global_max_p)
+    else:
+        if verbose:
+            print(f"  ⚠ Reached max basis {max_basis} "
+                  f"(error {errors_history[-1]:.2e})")
+
+    return basis, np.array(basis_params_list), np.array(errors_history)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Enrichment  (streaming)
 # ─────────────────────────────────────────────────────────────────────
 
 def enrich_basis(
@@ -515,8 +727,12 @@ def enrich_basis(
     tolerance: float,
     quadratic: bool = False,
     rng: Optional[np.random.Generator] = None,
+    precompiled: tuple | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Iteratively enrich basis with new training waveforms.
+    """Iteratively enrich basis with streamed training waveforms.
+
+    Training waveforms are generated and projected in batches of
+    ``cfg.projection_batch_size``; only one batch is in RAM at a time.
 
     Parameters
     ----------
@@ -535,78 +751,78 @@ def enrich_basis(
     quadratic : bool
         If True, build quadratic basis (|h|^2).
     rng : np.random.Generator, optional
-        Random generator (defaults to cfg.random_seed + 1000).
+        Random generator.
+    precompiled : tuple or None
+        ``(single_fn, batch_fn)`` from ``warmup_jit``.
 
     Returns
     -------
-    basis : np.ndarray, shape ``(m', k)``
-        Enriched orthonormal basis.
-    basis_params : np.ndarray, shape ``(m', p)``
-        Updated parameters.
+    basis, basis_params
     """
     if rng is None:
         rng = np.random.default_rng(cfg.random_seed + 1000)
 
     delta_f = cfg.delta_f
     kind = "quadratic" if quadratic else "linear"
+    proj_bs = cfg.projection_batch_size
 
     for cycle_idx, n_train in enumerate(cfg.training_set_sizes):
         t0 = time.time()
         if cfg.verbose:
-            print(f"\n  Enrichment cycle {cycle_idx + 1}/{len(cfg.training_set_sizes)}: "
+            print(f"\n  Enrichment cycle {cycle_idx + 1}/"
+                  f"{len(cfg.training_set_sizes)}: "
                   f"{n_train} waveforms ({kind})")
 
-        # Generate fresh training set
         train_params = sample_parameters(rng, n_train, cfg)
-        if cfg.verbose:
-            print(f"    Generating {n_train} waveforms...")
-        train_wf = generate_waveforms_batch(
-            predict_fn, train_params, frequencies,
-            batch_size=cfg.waveform_batch_size,
-        )
 
-        if quadratic:
-            train_wf = np.abs(train_wf) ** 2
-
-        train_wf = normalise(train_wf, delta_f)
-
-        # Compute errors
-        basis_jax = jnp.array(basis)
-        train_jax = jnp.array(train_wf)
-        errors = np.array(_projection_error_jax_jit(train_jax, basis_jax, delta_f))
-
-        n_outliers = np.sum(errors > tolerance)
-        max_err = errors.max()
-
-        if cfg.verbose:
-            print(f"    Max error: {max_err:.6e}, outliers: {n_outliers}/{n_train}")
-
-        if max_err < tolerance:
-            if cfg.verbose:
-                print(f"    ✓ No enrichment needed.")
-            continue
-
-        # Sort by error (descending) and add the worst ones greedily
-        order = np.argsort(errors)[::-1]
+        n_scanned = 0
         n_added = 0
-        for idx in order:
-            if errors[idx] < tolerance:
-                break
+        max_err_cycle = 0.0
 
-            # Recompute error with current basis (it may have changed)
-            h = train_wf[idx]
-            err = projection_error(h.reshape(1, -1), basis, delta_f)[0]
-            if err < tolerance:
-                continue
+        for bstart in range(0, n_train, proj_bs):
+            bend = min(bstart + proj_bs, n_train)
+            chunk_params = train_params[bstart:bend]
 
-            basis = gram_schmidt_add(basis, h, delta_f)
-            basis_params = np.vstack([basis_params, train_params[idx]])
-            n_added += 1
+            chunk_wf = generate_waveforms_batch(
+                predict_fn, chunk_params, frequencies,
+                batch_size=cfg.waveform_batch_size,
+                _precompiled=precompiled,
+            )
+            if quadratic:
+                chunk_wf = np.abs(chunk_wf) ** 2
+            chunk_wf = normalise(chunk_wf, delta_f)
+
+            errs = projection_error(chunk_wf, basis, delta_f)
+            local_max = float(errs.max())
+            if local_max > max_err_cycle:
+                max_err_cycle = local_max
+
+            # Add outliers sorted by error (descending)
+            outlier_idx = np.where(errs > tolerance)[0]
+            if len(outlier_idx) > 0:
+                order = outlier_idx[np.argsort(errs[outlier_idx])[::-1]]
+                for idx in order:
+                    h = chunk_wf[idx]
+                    err = projection_error(h.reshape(1, -1), basis, delta_f)[0]
+                    if err < tolerance:
+                        continue
+                    basis = gram_schmidt_add(basis, h, delta_f)
+                    basis_params = np.vstack([basis_params, chunk_params[idx]])
+                    n_added += 1
+
+            n_scanned += len(chunk_params)
+            del chunk_wf, errs
+            gc.collect()
+
+            if cfg.verbose and n_scanned % (proj_bs * 10) == 0:
+                print(f"      scanned {n_scanned}/{n_train}, "
+                      f"added {n_added}, basis={len(basis)}")
 
         elapsed = time.time() - t0
         if cfg.verbose:
-            print(f"    Added {n_added} vectors (basis size: {len(basis)}) "
-                  f"in {elapsed:.1f}s")
+            print(f"    Cycle done: scanned={n_scanned}, added={n_added}, "
+                  f"basis={len(basis)}, max_err={max_err_cycle:.2e}, "
+                  f"time={elapsed:.1f}s")
 
     return basis, basis_params
 
@@ -645,15 +861,13 @@ def empirical_interpolation(
     nodes : np.ndarray, shape ``(m,)``, int
         Indices of the empirical interpolation nodes.
     interpolant : np.ndarray, shape ``(k, m)``
-        Interpolant matrix B. For a waveform h:
-        ``h_approx = B @ h[nodes]``.
+        Interpolant matrix B.  ``h_approx = B @ h[nodes]``.
     """
     m, k = basis.shape
     if m == 0:
         raise ValueError("Basis is empty.")
 
     nodes = np.empty(m, dtype=int)
-    # V_ij = basis[j, nodes[i]]  (interpolation matrix, built incrementally)
 
     if verbose:
         print(f"\n  EIM: computing empirical nodes for {m} basis vectors "
@@ -663,45 +877,25 @@ def empirical_interpolation(
     nodes[0] = np.argmax(np.abs(basis[0]))
 
     for j in range(1, m):
-        # Solve V[:j, :j] c = basis[:j, :] at new point candidates
-        # V is the interpolation matrix: V[a, b] = basis[b, nodes[a]]
-        V = basis[:j, :][:, nodes[:j]]  # shape (j, j)
+        # V_mat[a,b] = basis[a, nodes[b]]  — shape (j, j)
+        V_mat = basis[:j, :][:, nodes[:j]].T
 
-        # For each frequency index f, solve V c = basis[:j, f]
-        # Then r[f] = basis[j, f] - basis[:j, f]^T @ c
-        # But basis[:j, f] = V[a, f] for column... let me be careful.
+        # c = V_mat^{-1} @ e_j(nodes)
+        rhs = basis[j, nodes[:j]]
+        c = np.linalg.solve(V_mat, rhs)
 
-        # Actually: V[a,b] = e_b(f_{nodes[a]}) where e_b is basis vector b
-        # We want c such that V c = e_0..j-1 evaluated at new freq
-        # The standard EIM residual is:
-        # r(f) = e_j(f) - sum_i c_i * e_i(f) where c = V^{-1} e_j(nodes)
+        # Residual: r(f) = e_j(f) - sum_a c_a e_a(f)
+        residual = basis[j] - c @ basis[:j]
 
-        # Let's do it clearly:
-        V_mat = basis[:j, :][:, nodes[:j]].T  # shape (j, j); V_mat[a,b] = e_a(f_{nodes[b]})
-        # Actually need to be careful about indexing.
-        # V_mat[a,b] = basis[a, nodes[b]]
-
-        # c = V_mat^{-1} @ [e_j(nodes[0]), ..., e_j(nodes[j-1])]
-        rhs = basis[j, nodes[:j]]  # shape (j,)
-        c = np.linalg.solve(V_mat, rhs)  # shape (j,)
-
-        # Residual at every frequency: r(f) = e_j(f) - sum_a c_a * e_a(f)
-        residual = basis[j] - c @ basis[:j]  # shape (k,)
-
-        # New node: where |residual| is maximal
         nodes[j] = np.argmax(np.abs(residual))
 
         if verbose and (j + 1) % 50 == 0:
             print(f"    EIM step {j+1}/{m}: node at freq index {nodes[j]}")
 
-    # Build the full interpolant matrix B
-    # B is shape (k, m) such that h ≈ B @ h[nodes]
-    # B = basis.T @ V_full^{-1}
-    V_full = basis[:, nodes].T  # shape (m, m); V_full[a,b] = basis[a, nodes[b]]
+    # Build full interpolant  B = basis.T @ V_full^{-1}
+    V_full = basis[:, nodes].T  # (m, m)
     V_inv = np.linalg.inv(V_full)
-
-    # B[f, j] = sum_a basis[a, f] * V_inv[a, j]
-    interpolant = basis.T @ V_inv  # shape (k, m)
+    interpolant = basis.T @ V_inv  # (k, m)
 
     if verbose:
         print(f"  ✓ EIM complete: {m} nodes selected")
@@ -719,7 +913,7 @@ def build_roq_basis(
     cfg: ROQConfig,
     kind: str = "linear",
 ) -> dict:
-    """Full pipeline: pre-selection → enrichment → EIM.
+    """Full pipeline: JIT warm-up → pre-selection → enrichment → EIM.
 
     Parameters
     ----------
@@ -731,13 +925,8 @@ def build_roq_basis(
     Returns
     -------
     results : dict
-        Dictionary with keys:
-        - ``basis``: orthonormal basis, shape ``(m, k)``
-        - ``basis_params``: parameters, shape ``(m, p)``
-        - ``nodes``: empirical node indices, shape ``(m,)``
-        - ``interpolant``: interpolant matrix, shape ``(k, m)``
-        - ``frequencies``: frequency grid
-        - ``errors_history``: greedy error history
+        ``basis``, ``basis_params``, ``nodes``, ``interpolant``,
+        ``frequencies``, ``empirical_frequencies``, ``errors_history``.
     """
     quadratic = kind == "quadratic"
     tolerance = cfg.tolerance_qua if quadratic else cfg.tolerance_lin
@@ -757,41 +946,41 @@ def build_roq_basis(
 
     t_start = time.time()
 
-    # Load waveform model
+    # ── Load model + JIT compile ────────────────────────────────────
     if cfg.verbose:
         print(f"\n  Loading waveform model from {cfg.model_path}...")
     predict_fn = _load_predictor(cfg.model_path)
 
-    # ── Phase 1: Pre-selection ──────────────────────────────────────
     if cfg.verbose:
-        print(f"\n  Phase 1: Pre-selection")
+        print(f"\n  Phase 0: JIT compilation")
+    precompiled = warmup_jit(
+        predict_fn, frequencies, cfg.waveform_batch_size,
+        verbose=cfg.verbose,
+    )
+
+    # ── Phase 1: Pre-selection (streaming greedy) ───────────────────
+    if cfg.verbose:
+        print(f"\n  Phase 1: Pre-selection (streaming)")
 
     rng = np.random.default_rng(cfg.random_seed)
 
-    # Generate corner waveforms + random seed waveforms
-    corner_params = corner_parameters(cfg)
-    n_random_seed = max(0, cfg.n_pre_basis_search_iter * n_pre - len(corner_params))
-    random_seed_params = sample_parameters(rng, n_random_seed, cfg)
-    pre_params = np.vstack([corner_params, random_seed_params])
+    corner_p = corner_parameters(cfg)
+    n_random_seed = max(0, cfg.n_pre_basis_search_iter * n_pre - len(corner_p))
+    random_seed_p = sample_parameters(rng, n_random_seed, cfg)
+    pre_params = np.vstack([corner_p, random_seed_p])
 
     if cfg.verbose:
-        print(f"    Generating {len(pre_params)} pre-selection waveforms "
-              f"({len(corner_params)} corners + {n_random_seed} random)...")
+        print(f"    Pre-selection pool: {len(pre_params)} parameter sets "
+              f"({len(corner_p)} corners + {n_random_seed} random)")
 
-    pre_wf = generate_waveforms_batch(
-        predict_fn, pre_params, frequencies,
+    basis, basis_params, errors_history = greedy_basis_streaming(
+        pre_params, predict_fn, frequencies, delta_f, tolerance,
+        max_basis=n_pre,
+        quadratic=quadratic,
         batch_size=cfg.waveform_batch_size,
-    )
-
-    if quadratic:
-        pre_wf = np.abs(pre_wf) ** 2
-
-    pre_wf = normalise(pre_wf, delta_f)
-
-    # Greedy selection
-    basis, basis_params, errors_history = greedy_basis(
-        pre_wf, pre_params, delta_f, tolerance,
-        max_basis=n_pre, verbose=cfg.verbose,
+        proj_batch=cfg.projection_batch_size,
+        verbose=cfg.verbose,
+        precompiled=precompiled,
     )
 
     # Save pre-selection checkpoint
@@ -803,14 +992,15 @@ def build_roq_basis(
     if cfg.verbose:
         print(f"    Saved pre-selection checkpoint to {out_dir}")
 
-    # ── Phase 2: Enrichment ─────────────────────────────────────────
+    # ── Phase 2: Enrichment (streaming) ─────────────────────────────
     if cfg.verbose:
-        print(f"\n  Phase 2: Enrichment")
+        print(f"\n  Phase 2: Enrichment (streaming)")
 
     rng_enrich = np.random.default_rng(cfg.random_seed + 2000)
     basis, basis_params = enrich_basis(
         basis, basis_params, predict_fn, frequencies, cfg,
         tolerance=tolerance, quadratic=quadratic, rng=rng_enrich,
+        precompiled=precompiled,
     )
 
     # Save enriched basis checkpoint
@@ -825,7 +1015,6 @@ def build_roq_basis(
 
     nodes, interpolant = empirical_interpolation(basis, delta_f, verbose=cfg.verbose)
 
-    # Save EIM outputs
     empirical_freqs = frequencies[nodes]
     np.save(out_dir / f"empirical_nodes_{kind}.npy", nodes)
     np.save(out_dir / f"empirical_frequencies_{kind}.npy", empirical_freqs)
@@ -861,6 +1050,7 @@ def validate_basis(
     cfg: ROQConfig,
     n_test: int = 200,
     quadratic: bool = False,
+    precompiled: tuple | None = None,
 ) -> tuple[np.ndarray, bool]:
     """Validate the ROQ basis against random unseen waveforms.
 
@@ -876,6 +1066,8 @@ def validate_basis(
         Number of test waveforms.
     quadratic : bool
         If True, test quadratic basis.
+    precompiled : tuple or None
+        ``(single_fn, batch_fn)`` from ``warmup_jit``.
 
     Returns
     -------
@@ -892,23 +1084,31 @@ def validate_basis(
 
     rng = np.random.default_rng(42)
     test_params = sample_parameters(rng, n_test, cfg)
-    test_wf = generate_waveforms_batch(
-        predict_fn, test_params, frequencies,
-        batch_size=cfg.waveform_batch_size,
-    )
-
-    if quadratic:
-        test_wf = np.abs(test_wf) ** 2
-
-    test_wf = normalise(test_wf, delta_f)
 
     errors = []
-    for i in range(n_test):
-        h = test_wf[i]
-        h_approx = interpolant @ h[nodes]
-        residual = h - h_approx
-        err = delta_f * np.sum(np.abs(residual) ** 2)
-        errors.append(err)
+    # Stream validation waveforms in batches
+    vbs = cfg.projection_batch_size
+    for bstart in range(0, n_test, vbs):
+        bend = min(bstart + vbs, n_test)
+        chunk_p = test_params[bstart:bend]
+        chunk_wf = generate_waveforms_batch(
+            predict_fn, chunk_p, frequencies,
+            batch_size=cfg.waveform_batch_size,
+            _precompiled=precompiled,
+        )
+        if quadratic:
+            chunk_wf = np.abs(chunk_wf) ** 2
+        chunk_wf = normalise(chunk_wf, delta_f)
+
+        for i in range(len(chunk_wf)):
+            h = chunk_wf[i]
+            h_approx = interpolant @ h[nodes]
+            residual = h - h_approx
+            err = delta_f * np.sum(np.abs(residual) ** 2)
+            errors.append(err)
+
+        del chunk_wf
+        gc.collect()
 
     errors = np.array(errors)
     max_err = errors.max()
@@ -930,7 +1130,8 @@ def validate_basis(
 
 def main():
     """Main entry point: build linear + quadratic ROQ bases."""
-    config_file = sys.argv[1] if len(sys.argv) > 1 else "config_roq_mlgw_bns_jax_gw170817.ini"
+    config_file = (sys.argv[1] if len(sys.argv) > 1
+                   else "config_roq_mlgw_bns_jax_gw170817.ini")
 
     if os.path.isfile(config_file):
         print(f"Loading config from {config_file}")
@@ -949,25 +1150,32 @@ def main():
     print(f"  Tolerance (qua)  : {cfg.tolerance_qua:.1e}")
     print(f"  Training cycles  : {cfg.training_set_sizes}")
     print(f"  vmap batch size  : {cfg.waveform_batch_size}")
+    print(f"  proj batch size  : {cfg.projection_batch_size}")
 
     t0 = time.time()
 
     # ── LINEAR ──────────────────────────────────────────────────────
     results_lin = build_roq_basis(cfg, kind="linear")
 
-    # Free memory before quadratic
-    predict_fn_for_validate = _load_predictor(cfg.model_path)
-    errors_lin, lin_ok = validate_basis(
-        results_lin, predict_fn_for_validate, cfg,
-        n_test=200, quadratic=False,
+    predict_fn = _load_predictor(cfg.model_path)
+    precompiled = warmup_jit(
+        predict_fn, cfg.frequencies, cfg.waveform_batch_size, verbose=0,
     )
+    errors_lin, lin_ok = validate_basis(
+        results_lin, predict_fn, cfg,
+        n_test=200, quadratic=False, precompiled=precompiled,
+    )
+
+    # Free linear data before quadratic
+    del results_lin
+    gc.collect()
 
     # ── QUADRATIC ───────────────────────────────────────────────────
     results_qua = build_roq_basis(cfg, kind="quadratic")
 
     errors_qua, qua_ok = validate_basis(
-        results_qua, predict_fn_for_validate, cfg,
-        n_test=200, quadratic=True,
+        results_qua, predict_fn, cfg,
+        n_test=200, quadratic=True, precompiled=precompiled,
     )
 
     t_total = time.time() - t0
@@ -976,23 +1184,28 @@ def main():
     print(f"\n{'='*65}")
     print(f"  ROQ BUILD SUMMARY")
     print(f"{'='*65}")
-    print(f"  LINEAR  : {len(results_lin['basis']):4d} basis vectors, "
-          f"{len(results_lin['nodes']):4d} nodes "
-          f"({cfg.n_freq / len(results_lin['nodes']):.0f}x speedup) "
+    n_lin_nodes = len(np.load(
+        Path(cfg.output_dir) / "ROQ_data/linear/empirical_nodes_linear.npy"))
+    n_qua_nodes = len(results_qua["nodes"])
+    n_lin_basis = len(np.load(
+        Path(cfg.output_dir) / "ROQ_data/linear/basis_linear.npy"))
+    print(f"  LINEAR  : {n_lin_basis:4d} basis vectors, "
+          f"{n_lin_nodes:4d} nodes "
+          f"({cfg.n_freq / n_lin_nodes:.0f}x speedup) "
           f"{'✓' if lin_ok else '✗'}")
     print(f"  QUAD    : {len(results_qua['basis']):4d} basis vectors, "
-          f"{len(results_qua['nodes']):4d} nodes "
-          f"({cfg.n_freq / len(results_qua['nodes']):.0f}x speedup) "
+          f"{n_qua_nodes:4d} nodes "
+          f"({cfg.n_freq / n_qua_nodes:.0f}x speedup) "
           f"{'✓' if qua_ok else '✗'}")
     print(f"  Total time: {t_total:.1f}s ({t_total / 60:.1f} min)")
     print(f"  Output dir: {cfg.output_dir}")
 
     # Save build metadata
     meta = {
-        "linear_basis_size": int(len(results_lin["basis"])),
-        "linear_nodes": int(len(results_lin["nodes"])),
+        "linear_basis_size": int(n_lin_basis),
+        "linear_nodes": int(n_lin_nodes),
         "quadratic_basis_size": int(len(results_qua["basis"])),
-        "quadratic_nodes": int(len(results_qua["nodes"])),
+        "quadratic_nodes": int(n_qua_nodes),
         "n_freq": int(cfg.n_freq),
         "f_min": cfg.f_min,
         "f_max": cfg.f_max,

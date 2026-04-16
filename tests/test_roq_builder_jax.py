@@ -28,12 +28,15 @@ from roq_builder_jax import (
     generate_waveforms_batch,
     gram_schmidt_add,
     greedy_basis,
+    greedy_basis_streaming,
     normalise,
     projection_error,
     projection_error_jax,
     sample_parameters,
     validate_basis,
     build_roq_basis,
+    warmup_jit,
+    _load_predictor,
 )
 
 
@@ -62,7 +65,8 @@ def small_cfg():
         ),
         random_seed=42,
         verbose=1,
-        waveform_batch_size=32,
+        waveform_batch_size=4,
+        projection_batch_size=20,
     )
 
 
