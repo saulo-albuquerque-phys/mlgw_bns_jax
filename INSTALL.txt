@@ -90,10 +90,10 @@ MANUAL SETUP (step by step)
    Open any notebook and select the kernel "mlgw-bns-jax".
 
    Key notebooks:
-     - build_roq_basis_numpy.ipynb         → Build the ROQ basis (NumPy, no JAX)
-     - build_roq_basis.ipynb               → Build the ROQ basis (JAX version)
-     - roq_pe_mlgw_bns_jax.ipynb           → ROQ-accelerated parameter estimation
-     - sharpy_mlgw_bns_jax_pe_fixedsky.ipynb → Standard (non-ROQ) PE with SHARPy
+     - build_roq_basis_numpy.ipynb             → Build ROQ basis (NumPy, no JAX)
+     - build_roq_basis_jax_colab.ipynb         → Build ROQ basis (JAX, GPU, Colab)
+     - roq_pe_mlgw_bns_jax.ipynb               → ROQ-accelerated parameter estimation
+     - sharpy_mlgw_bns_jax_pe_fixedsky.ipynb   → Standard (non-ROQ) PE with SHARPy
 
 
 KNOWN ISSUES & SOLUTIONS
@@ -120,17 +120,37 @@ KNOWN ISSUES & SOLUTIONS
    → setuptools ≥ 72 no longer bundles pkg_resources.
    → Fix: pip install "setuptools<71"
 
-5. JAX OOM during ROQ basis construction
+5. JAX OOM during ROQ basis construction (JenpyROQ route)
    → Use build_roq_basis_numpy.py (not build_roq_basis.py).
    → The NumPy version avoids JAX JIT compilation overhead entirely.
+   → Alternatively, use roq_builder_jax.py (see "JAX ROQ Builder" below),
+     which manages memory with streaming batches and vmap to avoid OOM.
 
 6. `framel` not found / cannot read .gwf files
    → framel is only available via conda-forge, not pip.
    → Already included in the conda create command above.
 
 
-BUILDING THE ROQ BASIS
------------------------
+================================================================================
+  BUILDING THE ROQ BASIS
+================================================================================
+
+There are now two independent paths for constructing the ROQ basis:
+
+  A) NumPy/JenpyROQ route (original) — uses the original mlgw_bns model
+     with the JenpyROQ library.  No JAX required at build time.
+
+  B) JAX-native route (new) — uses roq_builder_jax.py, a standalone JAX
+     reimplementation of the ROQ algorithm with JIT-compiled waveform
+     kernels, jax.vmap batching, streaming memory management, and
+     checkpoint/resume support.  Can run on GPU for faster builds.
+
+
+OPTION A: NumPy / JenpyROQ (no JAX at build time)
+---------------------------------------------------
+
+   This is the original route and is recommended for low-RAM environments
+   (≤ 16 GB, e.g. IGWN JupyterHub, Google Colab free tier).
 
    From a terminal:
      conda activate mlgw-bns-jax
@@ -140,5 +160,101 @@ BUILDING THE ROQ BASIS
    From a notebook:
      Open build_roq_basis_numpy.ipynb, select mlgw-bns-jax kernel, Run All.
 
-   Runtime: 2–6 hours depending on hardware.
+   Runtime: 2–6 hours depending on hardware (CPU only).
    Output:  roq_basis_mlgw_bns_jax/ROQ_data/ (linear + quadratic interpolants)
+
+   To resume an interrupted NumPy build, see jenpyroq_resume_instructions.txt
+   or edit the `pre-basis` field in config_roq_mlgw_bns_jax_gw170817.ini:
+     corners             → Start from scratch (default)
+     pre-selected-basis  → Resume from completed pre-selection
+     pre-enriched-basis  → Resume from completed enrichment
+
+
+OPTION B: JAX-native ROQ Builder (new)
+----------------------------------------
+
+   The JAX-native builder (roq_builder_jax.py) re-implements the full ROQ
+   construction algorithm using JAX.  It is designed for environments with
+   GPU access (Google Colab with GPU, HPC clusters) but also works on CPU.
+
+   Key features:
+     - JIT-compiled waveform kernels (compiled once, reused for all batches)
+     - jax.vmap for parallel batched waveform generation
+     - Streaming memory management — training sets are never fully materialised
+       in RAM; waveforms are generated in small batches (default vmap size = 8)
+     - Checkpoint/resume — each phase (preselection, enrichment, EIM) is
+       checkpointed to disk.  If interrupted, re-running with resume mode
+       skips already-completed phases automatically
+     - Built-in validation — runs mismatch tests after each basis build
+     - Saves build metadata (basis sizes, timings) to build_metadata.json
+
+   From a terminal (CPU):
+     conda activate mlgw-bns-jax
+     cd ~/mlgw_bns_jax
+     python roq_builder_jax.py                                  # default config
+     python roq_builder_jax.py config_roq_mlgw_bns_jax_gw170817.ini  # custom
+
+   CLI flags:
+     --no-resume   Force a fresh build (ignore existing checkpoints)
+
+   From Google Colab (GPU-accelerated):
+     Open build_roq_basis_jax_colab.ipynb, select a GPU runtime, Run All.
+     The notebook auto-installs jax[cuda12] and clones the repo.
+
+   For GPU usage, install JAX with CUDA support instead of CPU:
+     pip install "jax[cuda12]"
+
+   Output:  roq_basis_mlgw_bns_jax/ROQ_data/ (same structure as NumPy route)
+
+   The builder reads configuration from any JenpyROQ-style .ini file or
+   uses sensible defaults (23–2000 Hz, 128 s segment, tolerance 1e-4/1e-6).
+
+
+VALIDATING AND PACKAGING THE ROQ BASIS
+----------------------------------------
+
+   After building (either route), run the validation/packaging script:
+
+     python validate_and_package_roq.py
+
+   This will:
+     1. Check that all expected output files exist
+     2. Run mismatch validation with 200 random waveforms
+     3. Package the small files needed for PE into roq_pe_package.zip
+
+   Upload roq_pe_package.zip to Google Drive for Colab-based PE.
+
+
+FILE REFERENCE
+--------------
+
+   ROQ Build (NumPy / JenpyROQ — no JAX):
+     build_roq_basis_numpy.py              Standalone script (NumPy)
+     build_roq_basis_numpy.ipynb           Notebook (with Colab/IGWN setup)
+     mlgw_bns_roq_wrapper.py               JenpyROQ wrapper (NumPy mlgw_bns)
+
+   ROQ Build (JAX — JenpyROQ wrapper):
+     build_roq_basis.py                    Script using JAX via JenpyROQ
+     build_roq_basis.ipynb                 Notebook using JAX via JenpyROQ
+     mlgw_bns_jax_roq_wrapper.py           JenpyROQ wrapper (JAX model)
+
+   ROQ Build (JAX-native builder — new):
+     roq_builder_jax.py                    Standalone JAX ROQ builder
+     build_roq_basis_jax_colab.ipynb       GPU-accelerated Colab notebook
+     tests/test_roq_builder_jax.py         Unit and integration tests
+
+   ROQ Validation & Packaging:
+     validate_and_package_roq.py           Post-build validation + zip packaging
+
+   ROQ Configuration:
+     config_roq_mlgw_bns_jax_gw170817.ini JenpyROQ / ROQ builder config
+     jenpyroq_resume_instructions.txt      Resume instructions for JenpyROQ
+
+   Parameter Estimation:
+     roq_pe_mlgw_bns_jax.ipynb             ROQ PE notebook (SHARPy SMC + JAX)
+     gw170817_pe_sharpy.py                 Full-grid PE script (no ROQ)
+
+   Model & Data:
+     mlgw_bns_jax_model.h5                 Pre-trained mlgw_bns model (HDF5)
+     jax_import_n_predict.py               Standalone JAX predictor
+     environment.yml                       Conda environment specification
