@@ -8,7 +8,7 @@ QUICK START (IGWN JupyterHub)
 
    Open a terminal on the IGWN Jupyter server and run:
 
-   git clone -b blackjax_ns_gw_pe \
+   git clone -b copilot/add-reduced-order-quadrature-model \
      https://github.com/saulo-albuquerque-phys/mlgw_bns_jax.git
    cd mlgw_bns_jax
    bash setup_igwn.sh
