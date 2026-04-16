@@ -49,9 +49,11 @@ GPU/TPU acceleration, and native compatibility with vectorized samplers
 through \texttt{jax.vmap}.  We demonstrate its integration with the
 \textsc{SHARPy} sampler for sequential Monte~Carlo parameter estimation of
 the binary neutron star transient GW170817.  Furthermore, we construct a
-reduced-order quadrature (ROQ) basis using \texttt{JenpyROQ} and implement a
-JAX-native ROQ likelihood that evaluates waveform templates only at
-$\mathcal{O}(10^2)$ empirical interpolation nodes rather than the full
+reduced-order quadrature (ROQ) basis --- both via \texttt{JenpyROQ} and
+with our own JAX-native ROQ builder that exploits \texttt{jax.jit} and
+\texttt{jax.vmap} for efficient, parallelised basis construction --- and
+implement a JAX-native ROQ likelihood that evaluates waveform templates only
+at $\mathcal{O}(10^2)$ empirical interpolation nodes rather than the full
 $\sim 2.5 \times 10^5$ frequency grid, yielding $\sim\!100\times$ memory
 reduction per sampler particle.  The combination of JAX acceleration, ROQ
 compression, and GPU-parallel sampling opens the path toward real-time
@@ -371,6 +373,80 @@ For the basis construction we use the NumPy wrapper
 (\texttt{mlgw\_bns\_roq\_wrapper.py}) to avoid JAX's LLVM memory overhead
 during the generation of $\sim\!10^5$ training waveforms.
 
+\subsection{JAX-native ROQ builder}
+\label{sec:roq_jax}
+
+While \texttt{JenpyROQ} provides a well-tested reference implementation, its
+serial Python loop over training waveforms can become a bottleneck when the
+parameter space or the number of enrichment cycles grows.  We therefore
+developed an independent, JAX-native ROQ basis builder
+(\texttt{roq\_builder\_jax.py}) that implements the same
+algorithmic pipeline of~\cite{Field:2014ROQ}:
+
+\begin{enumerate}
+    \item \textbf{Pre-selection (greedy basis).}  A pool of corner and
+          random parameter-space samples is scanned in a streaming fashion.
+          At each greedy iteration the waveform with the largest projection
+          error $\|h - \mathcal{P}_V h\|^2$ onto the current orthonormal
+          basis~$V$ is identified and appended via modified Gram--Schmidt
+          with re-orthogonalization.
+    \item \textbf{Enrichment.}  Successively larger training sets
+          ($10^4$, $5\times10^4$, $10^5$ waveforms) are generated
+          on-the-fly and streamed through the projection-error test.
+          Any waveform whose error exceeds the tolerance is added to the
+          basis immediately, so the basis grows monotonically without
+          requiring all training waveforms in memory.
+    \item \textbf{Empirical Interpolation Method (EIM).}  Given the
+          reduced basis $\{e_j\}_{j=1}^m$, the standard EIM
+          algorithm~\cite{Field:2014ROQ} selects a sparse set of frequency
+          nodes and constructs the interpolant matrix~$B$ such that
+          $h(f) \approx B\, h(\{f_j^{\rm EIM}\})$ for any representable
+          waveform.
+\end{enumerate}
+
+The key optimizations that distinguish the JAX implementation from the
+original \texttt{JenpyROQ} pipeline are:
+
+\begin{itemize}
+    \item \textbf{JIT-compiled waveform kernels.}
+          Both a single-waveform function and a \texttt{jax.vmap}-batched
+          version are compiled to XLA machine code \emph{once} before any
+          training-set evaluation (warm-up phase).  All subsequent calls
+          reuse the cached compiled kernels, eliminating Python-level
+          overhead entirely.
+
+    \item \textbf{Vectorised evaluation via \texttt{jax.vmap}.}
+          Waveforms are generated in small batches (default batch size~8
+          for $253$\,k-point grids) through a \texttt{vmap}'d kernel.
+          The batch size is kept deliberately small to bound peak memory at
+          $\sim\!2$\,GB of intermediates, making the build feasible on
+          machines with $\sim\!16$\,GB RAM.
+
+    \item \textbf{Streaming memory management.}
+          Training sets are never fully materialised.  Both the greedy
+          pre-selection and enrichment loops generate and discard waveforms
+          in projection batches (default~200), keeping only the current
+          orthonormal basis ($\sim\!100 \times 253\text{k} \times 16$\,B
+          $\approx 400$\,MB) and one batch in memory at a time.
+          Explicit garbage collection is triggered after every batch to
+          prevent heap fragmentation.
+
+    \item \textbf{Checkpoint / resume support.}
+          A JSON status marker is written after each completed phase
+          (pre-selection, enrichment, EIM) for each basis kind
+          (linear, quadratic).  If the process is interrupted --- e.g.\
+          due to time limits on shared clusters --- it can be restarted
+          and will automatically skip phases whose checkpoints are
+          present on disk.  This is especially important for the
+          enrichment stage, which may require several hours for
+          $\sim\!10^5$ waveforms on CPU.
+\end{itemize}
+
+The procedure is executed independently for the linear basis (acting on
+$h(f)$) and the quadratic basis (acting on~$|h(f)|^2$).  The output files
+are identical in format to those produced by \texttt{JenpyROQ} and can be
+used interchangeably for ROQ-accelerated parameter estimation.
+
 \subsection{Node-only waveform evaluation}
 
 The standard ROQ likelihood decomposes the Wiener inner products as:
@@ -524,7 +600,11 @@ the \texttt{mlgw\_bns} BNS waveform surrogate.  The key results are:
     \item \textbf{ROQ compression}: waveform evaluation at
           $\mathcal{O}(10^2)$ empirical nodes instead of
           $\mathcal{O}(10^5)$ grid points, with $\sim\!100\times$ memory
-          reduction.
+          reduction.  In addition to the \texttt{JenpyROQ}-based
+          construction, we provide a JAX-native ROQ builder that exploits
+          \texttt{jax.jit} and \texttt{jax.vmap} for parallelized basis
+          construction with streaming memory management and checkpoint /
+          resume support (Sec.~\ref{sec:roq_jax}).
 
     \item \textbf{SHARPy integration}: full compatibility with the
           \textsc{SHARPy} SMC sampler for GPU-parallel PE.
@@ -619,6 +699,13 @@ Phys.\ Rev.\ X \textbf{9}, 031040 (2019),
 A.~Coogan \emph{et al.},
 (2022),
 \href{https://arxiv.org/abs/2202.09380}{arXiv:2202.09380}.
+
+\bibitem{Field:2014ROQ}
+S.~E.~Field, C.~R.~Galley, J.~S.~Hesthaven, J.~Kaye, and M.~Tiglio,
+\emph{Fast prediction and evaluation of gravitational waveforms using
+surrogate models},
+Phys.\ Rev.\ X \textbf{4}, 031006 (2014),
+\href{https://arxiv.org/abs/1308.3565}{arXiv:1308.3565}.
 
 \end{thebibliography}
 
