@@ -6,12 +6,8 @@ __pycache__/
 venv/
 _sharpy_repo/
 
-# Large ROQ basis/preselection files (>100 MB, not needed for PE)
-# The full basis matrices are only used during ROQ construction.
-# basis_interpolant_linear.npy (~432 MB) is tracked via Git LFS (see .gitattributes)
-roq_basis_mlgw_bns_jax/ROQ_data/**/preselection_*_basis.npy
-roq_basis_mlgw_bns_jax/ROQ_data/**/basis_linear.npy
-roq_basis_mlgw_bns_jax/ROQ_data/**/basis_quadratic.npy
+# All .npy files (too large for GitHub, not needed in repo)
+*.npy
 dist/
 .mypy_cache/
 .ipynb_checkpoints/

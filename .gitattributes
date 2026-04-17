@@ -1,2 +1,0 @@
-roq_basis_mlgw_bns_jax/ROQ_data/linear/basis_interpolant_linear.npy filter=lfs diff=lfs merge=lfs -text
-*.npy filter=lfs diff=lfs merge=lfs -text
