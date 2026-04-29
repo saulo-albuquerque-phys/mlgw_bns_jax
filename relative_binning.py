@@ -511,6 +511,689 @@ def build_rb_likelihood(
 
 
 # ======================================================================
+# Time-marginalized RB likelihood
+# ======================================================================
+
+def build_rb_likelihood_time_marg(
+    batched_detector,
+    fiducial_params: np.ndarray,
+    template_fn: Callable,
+    tc_grid: np.ndarray,
+    n_bins: int = 400,
+) -> tuple[Callable, RBNetwork]:
+    """Build a time-marginalized relative-binning log-likelihood.
+
+    Analytically marginalises over the coalescence time ``tc`` (``params[8]``)
+    by summing over a discrete grid of tc values, using the approximation
+
+        h_proj(f; tc) ≈ h_proj(f; tc₀) · exp(−i 2π f (tc − tc₀))
+
+    which is accurate when the angular frequency changes by ≪1 rad across
+    the tc integration range (typically ±150 ms).
+
+    The returned function takes a 12-element parameter vector **without tc**
+    (all other SHARPy parameters in order, with index-8 removed):
+        [ra, dec, logdist, incl, phic, pol, mc, q,
+         chi1, chi2, lambda1, lambda2]
+
+    For each tc_k in ``tc_grid``:
+        log L(tc_k) = −Σ_det TwoDTN_det · (dd_det − 2·Re[r⁰·A0 · exp(−i2πf Δtc_k)] + |r⁰|²·B0_det)
+    Then: log L_marg = logsumexp_k(log L(tc_k)) − log(N_tc)
+
+    Parameters
+    ----------
+    batched_detector : sharpy Detector (stacked)
+    fiducial_params : array, shape (13,)
+        SHARPy reference parameter vector including tc at index 8.
+    template_fn : callable
+        (params_13, freq) → (hp, hc).
+    tc_grid : array, shape (N_tc,)
+        Discrete tc values (params[8], i.e. seconds relative to trigtime) to
+        integrate over.  3000 points over ±150 ms is typical.
+    n_bins : int
+        Number of RB frequency bins.
+
+    Returns
+    -------
+    log_likelihood_rb_time_marg : callable
+        (params_no_tc_12,) → scalar (JAX-jittable).
+    rb_network : RBNetwork
+    """
+    n_det = len(batched_detector.latitude)
+
+    # ── Extract geometry ─────────────────────────────────────────────
+    lats = np.array(batched_detector.latitude)
+    lons = np.array(batched_detector.longitude)
+    elevs = np.array(batched_detector.elevation)
+    gammas = np.array(batched_detector.gamma)
+    zetas = np.array(batched_detector.zeta)
+    trigtimes = np.array(batched_detector.trigtime)
+    T_durs = np.array(batched_detector.T)
+
+    # ── Full-grid frequency array ────────────────────────────────────
+    f_full_np = np.array(batched_detector.Frequency[0])
+
+    # ── Reference projected waveform (at fiducial params) ───────────
+    print("[RB-TM] Computing reference waveform on full grid …")
+    h0_full_list = []
+    for i in range(n_det):
+        h0_i = np.array(
+            project_waveform_at_freqs(
+                jnp.array(fiducial_params, dtype=jnp.float64),
+                jnp.array(f_full_np, dtype=jnp.float64),
+                template_fn,
+                float(lats[i]), float(lons[i]), float(elevs[i]),
+                float(gammas[i]), float(zetas[i]),
+                float(trigtimes[i]), float(T_durs[i]),
+            )
+        )
+        h0_full_list.append(h0_i)
+
+    h0_avg = np.mean(np.abs(np.stack(h0_full_list)), axis=0)
+    h0_phase_ref = h0_full_list[0]
+
+    # ── Choose bin edges ─────────────────────────────────────────────
+    print(f"[RB-TM] Choosing {n_bins} frequency bins …")
+    h0_for_bins = h0_avg * np.exp(1j * np.angle(h0_phase_ref))
+    if np.sum(h0_avg > 0.0) < n_bins:
+        bin_edges = np.linspace(f_full_np[0], f_full_np[-1], n_bins + 1)
+    else:
+        bin_edges = choose_bins_pn(f_full_np, h0_for_bins, n_bins=n_bins)
+
+    f_bins_np = bin_centres(bin_edges)
+    f_bins_jax = jnp.array(f_bins_np, dtype=jnp.float64)
+
+    # ── Reference waveform at bin centres ────────────────────────────
+    h0_bins_list = []
+    for i in range(n_det):
+        h0_b = np.array(
+            project_waveform_at_freqs(
+                jnp.array(fiducial_params, dtype=jnp.float64),
+                f_bins_jax,
+                template_fn,
+                float(lats[i]), float(lons[i]), float(elevs[i]),
+                float(gammas[i]), float(zetas[i]),
+                float(trigtimes[i]), float(T_durs[i]),
+            )
+        )
+        h0_bins_list.append(h0_b)
+
+    # ── Per-detector summary data ────────────────────────────────────
+    print("[RB-TM] Precomputing per-detector summary data …")
+    summaries = []
+    for i in range(n_det):
+        data_i = np.array(batched_detector.FrequencySeries[i])
+        sigmasq_i = np.array(batched_detector.sigmasq[i])
+        TwoDTN_i = float(batched_detector.TwoDeltaTOverN[i])
+        summary_i = precompute_rb_summary(
+            f_full_np, data_i, h0_full_list[i], sigmasq_i, TwoDTN_i,
+            bin_edges, f_bins_np, h0_bins_list[i],
+        )
+        summaries.append(summary_i)
+
+    rb_network = RBNetwork(
+        summaries=summaries,
+        f_bins=f_bins_jax,
+        latitudes=jnp.array(lats),
+        longitudes=jnp.array(lons),
+        elevations=jnp.array(elevs),
+        gammas=jnp.array(gammas),
+        zetas=jnp.array(zetas),
+        trigtimes=jnp.array(trigtimes),
+        T_durations=jnp.array(T_durs),
+    )
+
+    # ── Precompute tc phase matrix ────────────────────────────────────
+    # tc_delta[k] = tc_grid[k] - tc_0
+    tc_0 = float(fiducial_params[8])
+    tc_delta = jnp.array(tc_grid, dtype=jnp.float64) - tc_0   # (N_tc,)
+    N_tc = len(tc_grid)
+
+    # phase_matrix[k, j] = exp(-i·2π·f_j·Δtc_k)   shape (N_tc, n_bins)
+    phase_matrix = jnp.exp(
+        -1j * 2.0 * jnp.pi * tc_delta[:, None] * f_bins_jax[None, :]
+    )  # (N_tc, n_bins) complex128
+
+    # ── Freeze scalars for JIT closure ───────────────────────────────
+    lats_py    = [float(lats[i])     for i in range(n_det)]
+    lons_py    = [float(lons[i])     for i in range(n_det)]
+    elevs_py   = [float(elevs[i])    for i in range(n_det)]
+    gammas_py  = [float(gammas[i])   for i in range(n_det)]
+    zetas_py   = [float(zetas[i])    for i in range(n_det)]
+    trigs_py   = [float(trigtimes[i]) for i in range(n_det)]
+    Ts_py      = [float(T_durs[i])   for i in range(n_det)]
+    tc_0_py    = float(tc_0)
+
+    n_bins_actual = len(f_bins_np)
+    print(
+        f"[RB-TM] Ready.  Full grid: {len(f_full_np)} pts → "
+        f"RB bins: {n_bins_actual} pts, tc grid: {N_tc} pts "
+        f"({len(f_full_np) // max(n_bins_actual, 1)}× freq reduction)"
+    )
+
+    def log_likelihood_rb_time_marg(params_no_tc: jnp.ndarray) -> jnp.ndarray:
+        """Time-marginalized RB log-likelihood.
+
+        Parameters
+        ----------
+        params_no_tc : array, shape (12,)
+            SHARPy parameters with tc removed:
+            [ra, dec, logdist, incl, phic, pol, mc, q,
+             chi1, chi2, lambda1, lambda2]
+
+        Returns
+        -------
+        log_L_marg : scalar
+        """
+        # Re-insert fiducial tc at index 8
+        params_13 = jnp.concatenate([
+            params_no_tc[:8],
+            jnp.array([tc_0_py], dtype=jnp.float64),
+            params_no_tc[8:],
+        ])
+
+        # Accumulate log_L(tc_k) for all detectors
+        log_L_tc = jnp.zeros(N_tc, dtype=jnp.float64)
+
+        for i in range(n_det):
+            # Projected waveform at bin centres (at fiducial tc)
+            h_bins_i = project_waveform_at_freqs(
+                params_13, f_bins_jax,
+                template_fn,
+                lats_py[i], lons_py[i], elevs_py[i],
+                gammas_py[i], zetas_py[i],
+                trigs_py[i], Ts_py[i],
+            )
+            h0_b = summaries[i].h0_bins
+            # Waveform ratio at tc_0 (tc variation handled via phase_matrix)
+            r_i = jnp.where(
+                jnp.abs(h0_b) > 0.0,
+                h_bins_i / h0_b,
+                jnp.zeros_like(h_bins_i),
+            )
+            # self_term: independent of tc
+            self_term_i = jnp.sum(jnp.abs(r_i) ** 2 * summaries[i].B0)
+            # cross(tc_k) = Re[ phase_matrix @ (r_j · A0_j) ]
+            A0_weight = r_i * summaries[i].A0           # (n_bins,) complex
+            cross_tc = jnp.real(phase_matrix @ A0_weight)  # (N_tc,)
+            TwoDTN_i = summaries[i].TwoDeltaTOverN
+            log_L_tc = log_L_tc + (
+                -TwoDTN_i * (summaries[i].dd - 2.0 * cross_tc + self_term_i)
+            )
+
+        return jax.scipy.special.logsumexp(log_L_tc) - jnp.log(
+            jnp.array(N_tc, dtype=jnp.float64)
+        )
+
+    return log_likelihood_rb_time_marg, rb_network
+
+
+def build_rb_likelihood_tc_phi_marg(
+    batched_detector,
+    fiducial_params: np.ndarray,
+    template_fn: Callable,
+    tc_grid: np.ndarray,
+    n_bins: int = 400,
+) -> tuple[Callable, RBNetwork]:
+    """Build a time- and phase-marginalized relative-binning log-likelihood.
+
+    Analytically marginalises over both the coalescence time ``tc`` (``params[8]``)
+    and the coalescence phase ``φc`` (``params[4]``).
+
+    The phase marginalisation uses the Bessel-function identity
+        ∫₀^{2π} exp(x·cos θ) dθ / (2π) = I₀(x)
+    so that for each tc value:
+        log L_φ(tc) = const_det + log I₀(2 · |W(tc)|)
+    where
+        const_det = −Σ_det TwoDTN_det · (dd_det + hh_det)
+        W(tc)     = Σ_det TwoDTN_det · Σ_j  r_j^(φ=0)(tc) · A0_j^(nophase)
+
+    The log I₀ is computed in a numerically stable way as
+        log I₀(x) = log(i0e(x)) + x
+    where ``i0e(x) = I₀(x) · exp(−x)`` (``jax.scipy.special.i0e``).
+
+    The returned function takes an 11-element parameter vector with **both
+    tc and φc removed**:
+        [ra, dec, logdist, incl, pol, mc, q, chi1, chi2, lambda1, lambda2]
+
+    Parameters
+    ----------
+    batched_detector : sharpy Detector (stacked)
+    fiducial_params : array, shape (13,)
+    template_fn : callable
+    tc_grid : array, shape (N_tc,)
+    n_bins : int
+
+    Returns
+    -------
+    log_likelihood_rb_tc_phi_marg : callable
+        (params_no_tc_no_phi_11,) → scalar (JAX-jittable).
+    rb_network : RBNetwork
+    """
+    n_det = len(batched_detector.latitude)
+
+    # ── Extract geometry ─────────────────────────────────────────────
+    lats     = np.array(batched_detector.latitude)
+    lons     = np.array(batched_detector.longitude)
+    elevs    = np.array(batched_detector.elevation)
+    gammas   = np.array(batched_detector.gamma)
+    zetas    = np.array(batched_detector.zeta)
+    trigtimes = np.array(batched_detector.trigtime)
+    T_durs   = np.array(batched_detector.T)
+
+    f_full_np = np.array(batched_detector.Frequency[0])
+
+    # ── Reference waveform at fiducial params ────────────────────────
+    print("[RB-TP] Computing reference waveform on full grid …")
+    h0_full_list = []
+    for i in range(n_det):
+        h0_i = np.array(
+            project_waveform_at_freqs(
+                jnp.array(fiducial_params, dtype=jnp.float64),
+                jnp.array(f_full_np, dtype=jnp.float64),
+                template_fn,
+                float(lats[i]), float(lons[i]), float(elevs[i]),
+                float(gammas[i]), float(zetas[i]),
+                float(trigtimes[i]), float(T_durs[i]),
+            )
+        )
+        h0_full_list.append(h0_i)
+
+    h0_avg = np.mean(np.abs(np.stack(h0_full_list)), axis=0)
+    h0_phase_ref = h0_full_list[0]
+
+    print(f"[RB-TP] Choosing {n_bins} frequency bins …")
+    h0_for_bins = h0_avg * np.exp(1j * np.angle(h0_phase_ref))
+    if np.sum(h0_avg > 0.0) < n_bins:
+        bin_edges = np.linspace(f_full_np[0], f_full_np[-1], n_bins + 1)
+    else:
+        bin_edges = choose_bins_pn(f_full_np, h0_for_bins, n_bins=n_bins)
+
+    f_bins_np = bin_centres(bin_edges)
+    f_bins_jax = jnp.array(f_bins_np, dtype=jnp.float64)
+
+    h0_bins_list = []
+    for i in range(n_det):
+        h0_b = np.array(
+            project_waveform_at_freqs(
+                jnp.array(fiducial_params, dtype=jnp.float64),
+                f_bins_jax,
+                template_fn,
+                float(lats[i]), float(lons[i]), float(elevs[i]),
+                float(gammas[i]), float(zetas[i]),
+                float(trigtimes[i]), float(T_durs[i]),
+            )
+        )
+        h0_bins_list.append(h0_b)
+
+    print("[RB-TP] Precomputing per-detector summary data …")
+    summaries = []
+    for i in range(n_det):
+        data_i   = np.array(batched_detector.FrequencySeries[i])
+        sigmasq_i = np.array(batched_detector.sigmasq[i])
+        TwoDTN_i = float(batched_detector.TwoDeltaTOverN[i])
+        summary_i = precompute_rb_summary(
+            f_full_np, data_i, h0_full_list[i], sigmasq_i, TwoDTN_i,
+            bin_edges, f_bins_np, h0_bins_list[i],
+        )
+        summaries.append(summary_i)
+
+    rb_network = RBNetwork(
+        summaries=summaries,
+        f_bins=f_bins_jax,
+        latitudes=jnp.array(lats),
+        longitudes=jnp.array(lons),
+        elevations=jnp.array(elevs),
+        gammas=jnp.array(gammas),
+        zetas=jnp.array(zetas),
+        trigtimes=jnp.array(trigtimes),
+        T_durations=jnp.array(T_durs),
+    )
+
+    # ── Fiducial phase and tc ────────────────────────────────────────
+    phic_0 = float(fiducial_params[4])
+    tc_0   = float(fiducial_params[8])
+    N_tc   = len(tc_grid)
+
+    tc_delta = jnp.array(tc_grid, dtype=jnp.float64) - tc_0  # (N_tc,)
+
+    # phase_matrix[k, j] = exp(-i·2π·f_j·Δtc_k)
+    phase_matrix = jnp.exp(
+        -1j * 2.0 * jnp.pi * tc_delta[:, None] * f_bins_jax[None, :]
+    )  # (N_tc, n_bins)
+
+    # Phase-strip factor for A0: removes fiducial phic from A0
+    # A0_j ∝ exp(-i·phic_0)  →  A0_nophic_j = A0_j · exp(+i·phic_0)
+    strip_phic = np.exp(1j * phic_0)
+    # Precomputed phase-stripped A0 for each detector
+    A0_nophic_list = [
+        jnp.array(np.array(summaries[i].A0) * strip_phic, dtype=jnp.complex128)
+        for i in range(n_det)
+    ]
+
+    # Phase-stripped h0_bins_noPhic = h0_bins · exp(+i·phic_0)
+    h0_bins_nophic_list = [
+        jnp.array(np.array(h0_bins_list[i]) * strip_phic, dtype=jnp.complex128)
+        for i in range(n_det)
+    ]
+
+    # Freeze scalars
+    lats_py   = [float(lats[i])      for i in range(n_det)]
+    lons_py   = [float(lons[i])      for i in range(n_det)]
+    elevs_py  = [float(elevs[i])     for i in range(n_det)]
+    gammas_py = [float(gammas[i])    for i in range(n_det)]
+    zetas_py  = [float(zetas[i])     for i in range(n_det)]
+    trigs_py  = [float(trigtimes[i]) for i in range(n_det)]
+    Ts_py     = [float(T_durs[i])    for i in range(n_det)]
+    tc_0_py   = float(tc_0)
+    phic_0_py = float(phic_0)
+
+    n_bins_actual = len(f_bins_np)
+    print(
+        f"[RB-TP] Ready.  Full grid: {len(f_full_np)} pts → "
+        f"RB bins: {n_bins_actual} pts, tc grid: {N_tc} pts"
+    )
+
+    def log_likelihood_rb_tc_phi_marg(params_no_tc_no_phi: jnp.ndarray) -> jnp.ndarray:
+        """Time- and phase-marginalized RB log-likelihood.
+
+        Parameters
+        ----------
+        params_no_tc_no_phi : array, shape (11,)
+            [ra, dec, logdist, incl, pol, mc, q, chi1, chi2, lambda1, lambda2]
+            (tc at index 8 and phic at index 4 both removed; pol is now at index 4)
+
+        Returns
+        -------
+        log_L_marg : scalar
+        """
+        # Re-insert phic=0 at index 4, then tc=tc_0 at index 8
+        # params_no_tc_no_phi: [0:ra, 1:dec, 2:logdist, 3:incl, 4:pol, 5:mc, 6:q,
+        #                        7:chi1, 8:chi2, 9:lambda1, 10:lambda2]
+        params_13 = jnp.concatenate([
+            params_no_tc_no_phi[:4],                          # ra, dec, logdist, incl
+            jnp.array([0.0], dtype=jnp.float64),              # phic = 0
+            params_no_tc_no_phi[4:7],                         # pol, mc, q
+            jnp.array([tc_0_py], dtype=jnp.float64),          # tc = tc_0
+            params_no_tc_no_phi[7:],                          # chi1, chi2, lambda1, lambda2
+        ])
+
+        # Accumulate: constant term, weighted A0 sum for |W(tc)|
+        const = jnp.float64(0.0)
+        A0_total = jnp.zeros(N_tc, dtype=jnp.complex128)   # Σ_det TwoDTN·Z_det(tc)
+
+        for i in range(n_det):
+            # Evaluate template at phic=0, tc=tc_0
+            h_bins_i = project_waveform_at_freqs(
+                params_13, f_bins_jax,
+                template_fn,
+                lats_py[i], lons_py[i], elevs_py[i],
+                gammas_py[i], zetas_py[i],
+                trigs_py[i], Ts_py[i],
+            )
+            h0_b_nophic = h0_bins_nophic_list[i]  # h0_bins · exp(+i·phic_0)
+            # Ratio using phase-stripped reference (so r⁰ is phic-independent)
+            r_nophic = jnp.where(
+                jnp.abs(h0_b_nophic) > 0.0,
+                h_bins_i / h0_b_nophic,
+                jnp.zeros_like(h_bins_i),
+            )
+            # hh (self-overlap, phic-independent)
+            hh_i = jnp.sum(jnp.abs(r_nophic) ** 2 * summaries[i].B0)
+            TwoDTN_i = summaries[i].TwoDeltaTOverN
+
+            # const contribution: -TwoDTN*(dd + hh)
+            const = const + (-TwoDTN_i * (summaries[i].dd + hh_i))
+
+            # W(tc_k) += TwoDTN_i · Σ_j r_j^(nophic) · A0_j^(nophic) · exp(-i2πfΔtc)
+            A0_weight = r_nophic * A0_nophic_list[i]         # (n_bins,) complex
+            A0_total = A0_total + TwoDTN_i * (phase_matrix @ A0_weight)  # (N_tc,)
+
+        # log I₀(2|W|) using numerically stable: log(i0e(x)) + x
+        x = 2.0 * jnp.abs(A0_total)   # (N_tc,)
+        log_bessel = jnp.log(jax.scipy.special.i0e(x)) + x  # (N_tc,)
+
+        # log L_phi(tc_k) = const + log I₀(2|W|)
+        log_L_phi_tc = const + log_bessel   # (N_tc,)
+
+        # Marginalise over tc
+        return jax.scipy.special.logsumexp(log_L_phi_tc) - jnp.log(
+            jnp.array(N_tc, dtype=jnp.float64)
+        )
+
+    return log_likelihood_rb_tc_phi_marg, rb_network
+
+
+# ======================================================================
+# Full-likelihood time marginalization (no RB approximation)
+# ======================================================================
+
+def build_full_likelihood_time_marg(
+    batched_detector,
+    fiducial_params: np.ndarray,
+    template_fn: Callable,
+    tc_grid: np.ndarray,
+) -> Callable:
+    """Build a time-marginalized full (non-RB) log-likelihood.
+
+    Uses the full frequency grid.  Cheaper per detector than the raw
+    SHARPy likelihood (no waveform evaluation per tc), but more expensive
+    than the RB variant.  Useful for validation.
+
+    The marginalisation proceeds by precomputing
+        integrand_det(f) = conj(d(f)) · h_noTc(f; θ) / σ²(f)
+    and then computing the cross-correlation at each tc_k via
+        cross_det(tc_k) = Re[ Σ_f integrand_det(f) · exp(−i2πf·tc_k) ]
+    using a single matrix multiply over all tc values simultaneously.
+
+    Parameters
+    ----------
+    batched_detector : sharpy Detector
+    fiducial_params  : array, shape (13,)
+    template_fn      : callable
+    tc_grid          : array, shape (N_tc,)  — absolute tc values (params[8])
+
+    Returns
+    -------
+    log_likelihood_full_time_marg : callable
+        (params_no_tc_12,) → scalar.  Inserts tc=tc_0 when calling the
+        waveform, then applies phase shifts for the tc grid.
+    """
+    n_det = len(batched_detector.latitude)
+    lats     = np.array(batched_detector.latitude)
+    lons     = np.array(batched_detector.longitude)
+    elevs    = np.array(batched_detector.elevation)
+    gammas   = np.array(batched_detector.gamma)
+    zetas    = np.array(batched_detector.zeta)
+    trigtimes = np.array(batched_detector.trigtime)
+    T_durs   = np.array(batched_detector.T)
+
+    f_full_np = np.array(batched_detector.Frequency[0])
+    f_full_jax = jnp.array(f_full_np, dtype=jnp.float64)
+
+    data_list    = [jnp.array(batched_detector.FrequencySeries[i], dtype=jnp.complex128)
+                    for i in range(n_det)]
+    sigmasq_list = [jnp.array(batched_detector.sigmasq[i], dtype=jnp.float64)
+                    for i in range(n_det)]
+    TwoDTN_list  = [float(batched_detector.TwoDeltaTOverN[i]) for i in range(n_det)]
+
+    tc_0   = float(fiducial_params[8])
+    N_tc   = len(tc_grid)
+    tc_arr = jnp.array(tc_grid, dtype=jnp.float64)
+
+    # phase_matrix[k, f] = exp(-i·2π·f_f·tc_k)   shape (N_tc, N_freq)
+    phase_matrix_full = jnp.exp(
+        -1j * 2.0 * jnp.pi * tc_arr[:, None] * f_full_jax[None, :]
+    )
+
+    lats_py   = [float(lats[i])      for i in range(n_det)]
+    lons_py   = [float(lons[i])      for i in range(n_det)]
+    elevs_py  = [float(elevs[i])     for i in range(n_det)]
+    gammas_py = [float(gammas[i])    for i in range(n_det)]
+    zetas_py  = [float(zetas[i])     for i in range(n_det)]
+    trigs_py  = [float(trigtimes[i]) for i in range(n_det)]
+    Ts_py     = [float(T_durs[i])    for i in range(n_det)]
+    tc_0_py   = float(tc_0)
+
+    def log_likelihood_full_time_marg(params_no_tc: jnp.ndarray) -> jnp.ndarray:
+        """Full time-marginalized log-likelihood (no RB approximation).
+
+        Parameters
+        ----------
+        params_no_tc : array, shape (12,)
+            [ra, dec, logdist, incl, phic, pol, mc, q,
+             chi1, chi2, lambda1, lambda2]
+        """
+        params_13 = jnp.concatenate([
+            params_no_tc[:8],
+            jnp.array([tc_0_py], dtype=jnp.float64),
+            params_no_tc[8:],
+        ])
+
+        log_L_tc = jnp.zeros(N_tc, dtype=jnp.float64)
+
+        for i in range(n_det):
+            # Full-grid projected waveform at tc_0 (tc variation via phase)
+            h_full_i = project_waveform_at_freqs(
+                params_13, f_full_jax, template_fn,
+                lats_py[i], lons_py[i], elevs_py[i],
+                gammas_py[i], zetas_py[i],
+                trigs_py[i], Ts_py[i],
+            )
+            # integrand = conj(d)·h/σ²  (at tc_0; tc phase added via matrix)
+            integrand = jnp.conj(data_list[i]) * h_full_i / sigmasq_list[i]  # (N_freq,)
+            dd_i = jnp.sum(jnp.abs(data_list[i]) ** 2 / sigmasq_list[i])
+            hh_i = jnp.sum(jnp.abs(h_full_i) ** 2 / sigmasq_list[i])
+            # cross(tc_k) = Re[ phase_matrix @ integrand ]
+            # But phase_matrix already encodes the full tc (not Δtc), so h_full_i
+            # must NOT yet include the tc phase shift beyond tc_0.
+            # Here h_full_i was computed at tc_0, so the phase shift from tc_0 to tc
+            # is exactly exp(-i2πf(tc - tc_0)).  Multiply by exp(-i2πf·tc_0) again
+            # to get the full tc-shifted cross-term:
+            # cross(tc_k) = Re[Σ_f conj(d_f)·h_noTc_f/σ²_f · exp(-i2πf·tc_k)]
+            # where h_noTc = h(tc=0) = h(tc_0) · exp(+i2πf·tc_0)
+            h_noTc = h_full_i * jnp.exp(1j * 2.0 * jnp.pi * f_full_jax * tc_0_py)
+            integrand_noTc = jnp.conj(data_list[i]) * h_noTc / sigmasq_list[i]
+            cross_tc = jnp.real(phase_matrix_full @ integrand_noTc)  # (N_tc,)
+            TwoDTN_i = TwoDTN_list[i]
+            log_L_tc = log_L_tc + (
+                -TwoDTN_i * (dd_i - 2.0 * cross_tc + hh_i)
+            )
+
+        return jax.scipy.special.logsumexp(log_L_tc) - jnp.log(
+            jnp.array(N_tc, dtype=jnp.float64)
+        )
+
+    return log_likelihood_full_time_marg
+
+
+def build_full_likelihood_tc_phi_marg(
+    batched_detector,
+    fiducial_params: np.ndarray,
+    template_fn: Callable,
+    tc_grid: np.ndarray,
+) -> Callable:
+    """Build a time- and phase-marginalized full (non-RB) log-likelihood.
+
+    Uses the full frequency grid with Bessel-function phase marginalisation.
+
+    Parameters
+    ----------
+    batched_detector : sharpy Detector
+    fiducial_params  : array, shape (13,)
+    template_fn      : callable
+    tc_grid          : array, shape (N_tc,)
+
+    Returns
+    -------
+    log_likelihood_full_tc_phi_marg : callable
+        (params_no_tc_no_phi_11,) → scalar.
+    """
+    n_det = len(batched_detector.latitude)
+    lats     = np.array(batched_detector.latitude)
+    lons     = np.array(batched_detector.longitude)
+    elevs    = np.array(batched_detector.elevation)
+    gammas   = np.array(batched_detector.gamma)
+    zetas    = np.array(batched_detector.zeta)
+    trigtimes = np.array(batched_detector.trigtime)
+    T_durs   = np.array(batched_detector.T)
+
+    f_full_np  = np.array(batched_detector.Frequency[0])
+    f_full_jax = jnp.array(f_full_np, dtype=jnp.float64)
+
+    data_list    = [jnp.array(batched_detector.FrequencySeries[i], dtype=jnp.complex128)
+                    for i in range(n_det)]
+    sigmasq_list = [jnp.array(batched_detector.sigmasq[i], dtype=jnp.float64)
+                    for i in range(n_det)]
+    TwoDTN_list  = [float(batched_detector.TwoDeltaTOverN[i]) for i in range(n_det)]
+
+    tc_0   = float(fiducial_params[8])
+    N_tc   = len(tc_grid)
+    tc_arr = jnp.array(tc_grid, dtype=jnp.float64)
+
+    phase_matrix_full = jnp.exp(
+        -1j * 2.0 * jnp.pi * tc_arr[:, None] * f_full_jax[None, :]
+    )  # (N_tc, N_freq)
+
+    lats_py   = [float(lats[i])      for i in range(n_det)]
+    lons_py   = [float(lons[i])      for i in range(n_det)]
+    elevs_py  = [float(elevs[i])     for i in range(n_det)]
+    gammas_py = [float(gammas[i])    for i in range(n_det)]
+    zetas_py  = [float(zetas[i])     for i in range(n_det)]
+    trigs_py  = [float(trigtimes[i]) for i in range(n_det)]
+    Ts_py     = [float(T_durs[i])    for i in range(n_det)]
+    tc_0_py   = float(tc_0)
+
+    def log_likelihood_full_tc_phi_marg(
+        params_no_tc_no_phi: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """Full time+phase-marginalized log-likelihood.
+
+        Parameters
+        ----------
+        params_no_tc_no_phi : array, shape (11,)
+            [ra, dec, logdist, incl, pol, mc, q, chi1, chi2, lambda1, lambda2]
+        """
+        params_13 = jnp.concatenate([
+            params_no_tc_no_phi[:4],                          # ra, dec, logdist, incl
+            jnp.array([0.0], dtype=jnp.float64),              # phic = 0
+            params_no_tc_no_phi[4:7],                         # pol, mc, q
+            jnp.array([tc_0_py], dtype=jnp.float64),          # tc = tc_0
+            params_no_tc_no_phi[7:],                          # chi1, chi2, λ1, λ2
+        ])
+
+        const     = jnp.float64(0.0)
+        W_tc      = jnp.zeros(N_tc, dtype=jnp.complex128)
+
+        for i in range(n_det):
+            h_full_i = project_waveform_at_freqs(
+                params_13, f_full_jax, template_fn,
+                lats_py[i], lons_py[i], elevs_py[i],
+                gammas_py[i], zetas_py[i],
+                trigs_py[i], Ts_py[i],
+            )
+            # Strip the tc_0 phase: h_noTc = h(tc_0) * exp(+i2πf·tc_0)
+            h_noTc = h_full_i * jnp.exp(1j * 2.0 * jnp.pi * f_full_jax * tc_0_py)
+            dd_i   = jnp.sum(jnp.abs(data_list[i]) ** 2 / sigmasq_list[i])
+            hh_i   = jnp.sum(jnp.abs(h_noTc) ** 2 / sigmasq_list[i])
+            TwoDTN_i = TwoDTN_list[i]
+            const  = const + (-TwoDTN_i * (dd_i + hh_i))
+            # Accumulate W(tc_k) = Σ_det TwoDTN_det · Σ_f conj(d)·h_noTc/σ² · exp(-i2πf·tc)
+            integrand_noTc = jnp.conj(data_list[i]) * h_noTc / sigmasq_list[i]
+            W_tc = W_tc + TwoDTN_i * (phase_matrix_full @ integrand_noTc)  # (N_tc,)
+
+        x = 2.0 * jnp.abs(W_tc)
+        log_bessel = jnp.log(jax.scipy.special.i0e(x)) + x
+        log_L_phi_tc = const + log_bessel  # (N_tc,)
+
+        return jax.scipy.special.logsumexp(log_L_phi_tc) - jnp.log(
+            jnp.array(N_tc, dtype=jnp.float64)
+        )
+
+    return log_likelihood_full_tc_phi_marg
+
+
+# ======================================================================
 # Signal-capture check (matched filter SNR)
 # ======================================================================
 
