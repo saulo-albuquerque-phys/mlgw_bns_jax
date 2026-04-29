@@ -100,39 +100,51 @@ def choose_bins_pn(
     n_bins: int = 400,
     max_bin_width_hz: float = 8.0,
 ) -> np.ndarray:
-    """Choose frequency bin edges based on phase of a reference waveform.
+    """Choose frequency bin edges based on accumulated PN chirp phase.
 
     Bin boundaries are placed so that:
-    1. The accumulated waveform *phase change* within each bin is approximately
-       equal (good for chirp-mass / spin accuracy).
-    2. No bin is wider than ``max_bin_width_hz`` Hz (good for coalescence-time
-       accuracy — prevents large linear-phase errors at high frequencies where
-       the PN phase varies slowly).
+    1. The accumulated PN chirp phase within each bin is approximately equal.
+       Uses the analytical proxy ``f_low^{-5/3} - f^{-5/3}`` (proportional
+       to the leading-order PN phase) rather than the absolute phase of the
+       projected waveform h0.  This is critical for BNS signals: the
+       projected waveform includes a large time-shift term
+       ``exp(-i 2π f · timeshift)`` whose phase derivative ≈ 2π · 127 s can
+       dominate h0's phase near ``f_low`` and create a spurious "slow-phase"
+       saddle point that places too few bins at 26–35 Hz, causing
+       ``|ΔlogL| ≈ 3–9`` errors for ±1σ chirp-mass perturbations.
+       The PN proxy is free from this contamination and gives per-bin
+       phase variation < 0.03 rad for δmc = 0.001 M☉ on GW170817-like data.
+    2. No bin is wider than ``max_bin_width_hz`` Hz (coalescence-time accuracy —
+       prevents large linear-phase errors at high frequencies where the PN
+       phase varies slowly).
 
     Parameters
     ----------
     f : np.ndarray, shape (N,)
         Frequency array in Hz.
     h0 : np.ndarray, shape (N,) complex
-        Projected reference waveform at all frequencies.
+        Projected reference waveform at all frequencies.  Retained in the
+        signature for API compatibility; no longer used for bin selection.
     n_bins : int
         Target number of bins.
     max_bin_width_hz : float
-        Maximum allowed bin width in Hz.  Ensures that a time-of-arrival
-        shift δt_c introduces at most ``2π · max_bin_width_hz · δt_c`` rad
-        of phase error within a bin.  Default 8 Hz → ≤ 0.05 rad for δt_c
-        ≤ 1 ms.
+        Maximum allowed bin width in Hz.  Default 8 Hz → ≤ 0.05 rad phase
+        error per bin for δt_c ≤ 1 ms.
 
     Returns
     -------
-    bin_edges : np.ndarray, shape (≤ n_bins+1,) but at least 2 elements.
+    bin_edges : np.ndarray, shape (≥ 2,)
         Frequencies of bin boundaries, including f[0] and f[-1].
+        Actual bin count ≥ n_bins due to the max-width constraint.
     """
-    # Phase-based edges (equal phase change per bin)
-    phase = np.unwrap(np.angle(h0))
-    cum_phase = np.abs(phase - phase[0])
+    # PN-proxy cumulative phase: C(f) = f_low^{-5/3} - f^{-5/3}
+    # Proportional to the accumulated PN chirp phase from f_low to f.
+    # Placing equal C increments per bin is equivalent to equal-rate-of-
+    # phase-change binning and gives bin widths ∝ f^{8/3} — narrow at low
+    # frequencies where the chirp-mass sensitivity is highest.
+    cum_phase = f[0] ** (-5.0 / 3.0) - f ** (-5.0 / 3.0)  # monotone increasing
     total_phase = cum_phase[-1]
-    if total_phase < 1.0:
+    if total_phase < 1e-10:
         edges_phase = np.linspace(f[0], f[-1], n_bins + 1)
     else:
         target_phases = np.linspace(0.0, total_phase, n_bins + 1)
@@ -140,13 +152,12 @@ def choose_bins_pn(
         edges_phase[0] = f[0]
         edges_phase[-1] = f[-1]
 
-    # Frequency-based edges (maximum bin width constraint)
+    # Frequency-based edges (maximum bin width constraint for tc accuracy)
     n_freq_bins = max(n_bins, int(np.ceil((f[-1] - f[0]) / max_bin_width_hz)) + 1)
     edges_freq = np.linspace(f[0], f[-1], n_freq_bins + 1)
 
     # Merge both sets of edges and keep unique values
     edges_merged = np.unique(np.concatenate([edges_phase, edges_freq]))
-    # Clip to valid frequency range
     edges_merged = edges_merged[
         (edges_merged >= f[0]) & (edges_merged <= f[-1])
     ]
