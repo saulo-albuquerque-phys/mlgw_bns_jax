@@ -1060,18 +1060,11 @@ def build_full_likelihood_time_marg(
                 gammas_py[i], zetas_py[i],
                 trigs_py[i], Ts_py[i],
             )
-            # integrand = conj(d)·h/σ²  (at tc_0; tc phase added via matrix)
-            integrand = jnp.conj(data_list[i]) * h_full_i / sigmasq_list[i]  # (N_freq,)
             dd_i = jnp.sum(jnp.abs(data_list[i]) ** 2 / sigmasq_list[i])
             hh_i = jnp.sum(jnp.abs(h_full_i) ** 2 / sigmasq_list[i])
-            # cross(tc_k) = Re[ phase_matrix @ integrand ]
-            # But phase_matrix already encodes the full tc (not Δtc), so h_full_i
-            # must NOT yet include the tc phase shift beyond tc_0.
-            # Here h_full_i was computed at tc_0, so the phase shift from tc_0 to tc
-            # is exactly exp(-i2πf(tc - tc_0)).  Multiply by exp(-i2πf·tc_0) again
-            # to get the full tc-shifted cross-term:
+            # Strip the tc_0 phase so the cross-term can be computed at any tc via
             # cross(tc_k) = Re[Σ_f conj(d_f)·h_noTc_f/σ²_f · exp(-i2πf·tc_k)]
-            # where h_noTc = h(tc=0) = h(tc_0) · exp(+i2πf·tc_0)
+            # where h_noTc = h(tc_0) · exp(+i2πf·tc_0) removes the tc_0 contribution.
             h_noTc = h_full_i * jnp.exp(1j * 2.0 * jnp.pi * f_full_jax * tc_0_py)
             integrand_noTc = jnp.conj(data_list[i]) * h_noTc / sigmasq_list[i]
             cross_tc = jnp.real(phase_matrix_full @ integrand_noTc)  # (N_tc,)
