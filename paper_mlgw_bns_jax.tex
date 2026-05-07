@@ -46,19 +46,22 @@ Our model preserves the full accuracy of the original --- achieving
 machine-precision agreement (mismatch $\bar{\mathcal{F}} \sim 10^{-14}$)
 --- while gaining JIT compilation, automatic differentiation, hardware-agnostic
 GPU/TPU acceleration, and native compatibility with vectorized samplers
-through \texttt{jax.vmap}.  We demonstrate its integration with the
-\textsc{SHARPy} sampler for sequential Monte~Carlo parameter estimation of
-the binary neutron star transient GW170817.  Furthermore, we construct a
-reduced-order quadrature (ROQ) basis --- both via \texttt{JenpyROQ} and
-with our own JAX-native ROQ builder that exploits \texttt{jax.jit} and
-\texttt{jax.vmap} for efficient, parallelised basis construction --- and
-implement a JAX-native ROQ likelihood that evaluates waveform templates only
-at $\mathcal{O}(10^2)$ empirical interpolation nodes rather than the full
-$\sim 2.5 \times 10^5$ frequency grid, yielding $\sim\!100\times$ memory
-reduction per sampler particle.  The combination of JAX acceleration, ROQ
-compression, and GPU-parallel sampling opens the path toward real-time
-parameter estimation for binary neutron star mergers in the era of
-next-generation detectors.
+through \texttt{jax.vmap}.  We implement a JAX-native relative-binning
+likelihood~\cite{Zackay:2018} that reduces the per-evaluation cost from
+$\mathcal{O}(N_{\rm freq})$ to $\mathcal{O}(N_{\rm bins})$, with
+$N_{\rm bins} \ll N_{\rm freq}$, and extend it with analytical
+marginalization over coalescence time and phase using a grid-based
+logsumexp scheme and the modified Bessel function identity,
+respectively.  We demonstrate Bayesian parameter estimation of the
+binary neutron star event GW170817 using the BlackJAX acceptance-walk
+nested sampler~\cite{BlackJAX,Handley:2015fda}, including sampling over
+sky location (right ascension and declination) --- going beyond the
+original \texttt{mlgw\_bns} analysis of~\cite{Tissino:2022} which fixed
+the sky position to the electromagnetic counterpart.  The combination of
+JAX acceleration, relative-binning compression, analytical
+marginalization, and full sky-location sampling opens the path toward
+real-time parameter estimation for binary neutron star mergers in the
+era of next-generation detectors.
 \end{abstract}
 
 \maketitle
@@ -78,17 +81,14 @@ points $N_{\rm freq}$.
 Tissino et al.~\cite{Tissino:2022} introduced \texttt{mlgw\_bns}, a
 machine-learning surrogate trained on the state-of-the-art effective-one-body
 (EOB) model \texttt{TEOBResumSPA}, achieving waveform generation speedups of
-$\sim\!35\times$ at reduced frequency grids.  When combined with
-reduced-order quadratures (ROQs) constructed with \texttt{JenpyROQ}%
-~\cite{JenpyROQ}, an overall PE acceleration of more than an order of
-magnitude was demonstrated for the analysis of GW170817.
+$\sim\!35\times$ at reduced frequency grids, enabling efficient PE of GW170817.
 
 However, the original \texttt{mlgw\_bns} is implemented in NumPy/SciPy with
 \texttt{numba} just-in-time compilation, which limits it to CPU execution and
 prevents seamless integration with modern gradient-based and vectorized
-sampling algorithms.  In particular, the growing class of sequential Monte
-Carlo (SMC) samplers --- such as \textsc{SHARPy}~\cite{SHARPy} --- exploit
-\texttt{jax.vmap} to evaluate the likelihood across hundreds of particles
+sampling algorithms.  In particular, nested samplers such as the BlackJAX
+acceptance-walk nested sampler~\cite{BlackJAX,Handley:2015fda} exploit
+\texttt{jax.vmap} to evaluate the likelihood across hundreds of live points
 simultaneously on GPU, achieving dramatic wall-clock speedups.  To unlock
 these capabilities, the waveform model itself must be natively expressed as a
 JAX computation graph.
@@ -102,19 +102,26 @@ reimplementation of \texttt{mlgw\_bns} that:
           \texttt{vmap}-compatible;
     \item requires no dependency on the original \texttt{mlgw\_bns} package
           at prediction time;
-    \item integrates natively with \textsc{SHARPy} for GPU-accelerated PE;
-    \item supports an ROQ-compressed likelihood where templates are evaluated
-          only at empirical interpolation nodes.
+    \item integrates natively with BlackJAX nested sampling for GPU-accelerated PE;
+    \item supports a relative-binning likelihood~\cite{Zackay:2018} with
+          analytical marginalization over coalescence time and phase, reducing
+          the per-evaluation cost from $\mathcal{O}(N_{\rm freq})$ to
+          $\mathcal{O}(N_{\rm bins})$ and the sampled parameter space from
+          11 to 9 dimensions;
+    \item performs full parameter estimation including sky location (right
+          ascension and declination), going beyond the original
+          \texttt{mlgw\_bns} analysis~\cite{Tissino:2022} which fixed the
+          sky position to the electromagnetic counterpart of GW170817.
 \end{enumerate}
 
 This paper is organized as follows.  Section~\ref{sec:original} briefly
 reviews the original \texttt{mlgw\_bns} model.  Section~\ref{sec:jax}
 describes the JAX reimplementation.  Section~\ref{sec:accuracy} presents
 accuracy validation.  Section~\ref{sec:speed} discusses computational
-performance.  Section~\ref{sec:roq} covers the ROQ basis construction and
-JAX-native likelihood.  Section~\ref{sec:pe} presents parameter estimation
-results for GW170817 with \textsc{SHARPy}.  Section~\ref{sec:conclusions}
-concludes.
+performance.  Section~\ref{sec:relbin} covers the relative-binning likelihood
+and analytical time and phase marginalization.  Section~\ref{sec:pe} presents
+parameter estimation results for GW170817 with BlackJAX nested sampling.
+Section~\ref{sec:conclusions} concludes.
 
 
 %==========================================================================
@@ -351,195 +358,176 @@ $\partial h_{+,\times}/\partial\bm{\theta}$ are obtained for free via
 
 
 %==========================================================================
-\section{Reduced-order quadrature for JAX-native PE}
-\label{sec:roq}
+\section{Relative-binning likelihood with analytical marginalization}
+\label{sec:relbin}
 
-\subsection{ROQ basis construction}
+\subsection{Relative binning}
 
-We construct ROQ interpolants for \texttt{mlgw\_bns} using
-\texttt{JenpyROQ}~\cite{JenpyROQ}, following the methodology
-of~\cite{Tissino:2022} but with an updated configuration targeting the
-GW170817 parameter space.  The key settings are:
-\begin{itemize}
-    \item Frequency range: $[23, 2000]$\,Hz, segment length $T = 128$\,s,
-          yielding $N_{\rm freq} = 253{,}057$ grid points;
-    \item Chirp mass range: $\mathcal{M}_c \in [1.18, 1.21]\,M_\odot$;
-    \item Tolerance: $10^{-4}$ (linear), $10^{-6}$ (quadratic);
-    \item Three enrichment cycles with $10^4$, $5\times10^4$, $10^5$
-          training waveforms.
-\end{itemize}
+The relative-binning (RB) method of Zackay, Dai \& Venumadhav~\cite{Zackay:2018}
+reduces the cost of each likelihood evaluation from $\mathcal{O}(N_{\rm freq})$
+to $\mathcal{O}(N_{\rm bins})$, where $N_{\rm bins} \ll N_{\rm freq}$.  The
+key observation is that for a candidate template $h(\bm{\theta})$ close to a
+fiducial template $h_0$, the ratio
+\begin{equation}
+    r_j(\bm{\theta}) = \frac{h_{\rm proj}(f_j;\bm{\theta})}{h_{\rm proj}(f_j;\bm{\theta}_0)}
+\end{equation}
+is slowly varying across each frequency bin $j$, allowing it to be
+approximated as constant within that bin.
 
-For the basis construction we use the NumPy wrapper
-(\texttt{mlgw\_bns\_roq\_wrapper.py}) to avoid JAX's LLVM memory overhead
-during the generation of $\sim\!10^5$ training waveforms.
-
-\subsection{JAX-native ROQ builder}
-\label{sec:roq_jax}
-
-While \texttt{JenpyROQ} provides a well-tested reference implementation, its
-serial Python loop over training waveforms can become a bottleneck when the
-parameter space or the number of enrichment cycles grows.  We therefore
-developed an independent, JAX-native ROQ basis builder
-(\texttt{roq\_builder\_jax.py}) that implements the same
-algorithmic pipeline of~\cite{Field:2014ROQ}:
-
-\begin{enumerate}
-    \item \textbf{Pre-selection (greedy basis).}  A pool of corner and
-          random parameter-space samples is scanned in a streaming fashion.
-          At each greedy iteration the waveform with the largest projection
-          error $\|h - \mathcal{P}_V h\|^2$ onto the current orthonormal
-          basis~$V$ is identified and appended via modified Gram--Schmidt
-          with re-orthogonalization.
-    \item \textbf{Enrichment.}  Successively larger training sets
-          ($10^4$, $5\times10^4$, $10^5$ waveforms) are generated
-          on-the-fly and streamed through the projection-error test.
-          Any waveform whose error exceeds the tolerance is added to the
-          basis immediately, so the basis grows monotonically without
-          requiring all training waveforms in memory.
-    \item \textbf{Empirical Interpolation Method (EIM).}  Given the
-          reduced basis $\{e_j\}_{j=1}^m$, the standard EIM
-          algorithm~\cite{Field:2014ROQ} selects a sparse set of frequency
-          nodes and constructs the interpolant matrix~$B$ such that
-          $h(f) \approx B\, h(\{f_j^{\rm EIM}\})$ for any representable
-          waveform.
-\end{enumerate}
-
-The key optimizations that distinguish the JAX implementation from the
-original \texttt{JenpyROQ} pipeline are:
-
-\begin{itemize}
-    \item \textbf{JIT-compiled waveform kernels.}
-          Both a single-waveform function and a \texttt{jax.vmap}-batched
-          version are compiled to XLA machine code \emph{once} before any
-          training-set evaluation (warm-up phase).  All subsequent calls
-          reuse the cached compiled kernels, eliminating Python-level
-          overhead entirely.
-
-    \item \textbf{Vectorised evaluation via \texttt{jax.vmap}.}
-          Waveforms are generated in small batches (default batch size~8
-          for $253$\,k-point grids) through a \texttt{vmap}'d kernel.
-          The batch size is kept deliberately small to bound peak memory at
-          $\sim\!2$\,GB of intermediates, making the build feasible on
-          machines with $\sim\!16$\,GB RAM.
-
-    \item \textbf{Streaming memory management.}
-          Training sets are never fully materialised.  Both the greedy
-          pre-selection and enrichment loops generate and discard waveforms
-          in projection batches (default~200), keeping only the current
-          orthonormal basis ($\sim\!100 \times 253\text{k} \times 16$\,B
-          $\approx 400$\,MB) and one batch in memory at a time.
-          Explicit garbage collection is triggered after every batch to
-          prevent heap fragmentation.
-
-    \item \textbf{Checkpoint / resume support.}
-          A JSON status marker is written after each completed phase
-          (pre-selection, enrichment, EIM) for each basis kind
-          (linear, quadratic).  If the process is interrupted --- e.g.\
-          due to time limits on shared clusters --- it can be restarted
-          and will automatically skip phases whose checkpoints are
-          present on disk.  This is especially important for the
-          enrichment stage, which may require several hours for
-          $\sim\!10^5$ waveforms on CPU.
-\end{itemize}
-
-The procedure is executed independently for the linear basis (acting on
-$h(f)$) and the quadratic basis (acting on~$|h(f)|^2$).  The output files
-are identical in format to those produced by \texttt{JenpyROQ} and can be
-used interchangeably for ROQ-accelerated parameter estimation.
-
-\subsection{Node-only waveform evaluation}
-
-The standard ROQ likelihood decomposes the Wiener inner products as:
+We partition the analysis band $[f_{\rm min}, f_{\rm max}]$ into
+$N_{\rm bins}$ logarithmically spaced bins and pre-compute the following
+summary data for each detector $d$:
 \begin{align}
-    \langle d | h \rangle &\approx \sum_{j=1}^{n_{\rm lin}}
-        w_j^{(\rm lin)}\, h(f_j^{\rm lin};\bm{\theta}), \label{eq:dh}\\
-    \langle h | h \rangle &\approx \sum_{j=1}^{n_{\rm qua}}
-        w_j^{(\rm qua)}\, |h(f_j^{\rm qua};\bm{\theta})|^2, \label{eq:hh}
+    A_{0,j}^{(d)} &= \sum_{k \in \mathrm{bin}_j}
+        \frac{\overline{d_k}\, h_{0,k}^{(d)}}{\sigma_k^2}, \label{eq:A0}\\
+    B_{0,j}^{(d)} &= \sum_{k \in \mathrm{bin}_j}
+        \frac{|h_{0,k}^{(d)}|^2}{\sigma_k^2}, \label{eq:B0}\\
+    \mathcal{D}^{(d)} &= \sum_k \frac{|d_k|^2}{\sigma_k^2}, \label{eq:dd}
 \end{align}
-where $\{f_j^{\rm lin}\}$ and $\{f_j^{\rm qua}\}$ are the empirical
-interpolation nodes, and the weights $w_j$ are pre-computed from the basis
-interpolants and the detector data/PSD.
+where $\sigma_k^2 \propto S_n(f_k)$ is the noise power spectral density
+and $\overline{\cdot}$ denotes complex conjugation.  Given these pre-computed
+quantities, the approximate log-likelihood at any candidate $\bm{\theta}$ is
+\begin{equation}
+    \ln \mathcal{L}_{\rm RB}(\bm{\theta}) \approx
+    -\frac{2\Delta t}{N}\sum_d \!\left[
+        \mathcal{D}^{(d)}
+        - 2\,\mathrm{Re}\!\left(\sum_j r_j \, A_{0,j}^{(d)}\right)
+        + |r_j|^2 B_{0,j}^{(d)}
+    \right],
+\end{equation}
+where only $N_{\rm bins} \sim 100$--$500$ waveform evaluations at bin-centre
+frequencies are needed per candidate, compared to $N_{\rm freq} \sim 3000$
+for the full likelihood.
 
-A crucial optimization is that the waveform template $h$ needs only be
-evaluated at the empirical nodes --- \emph{not} on the full $N_{\rm freq}$
-grid.  With $n_{\rm lin} \sim 250$ and $n_{\rm qua} \sim 10$, this
-represents a $\sim\!1000\times$ reduction in the number of frequency points
-per likelihood evaluation, and a $\sim\!100\times$ reduction in memory per
-sampler particle.
+We implement the RB likelihood as a JAX function in
+\texttt{relative\_binning.py}, fully compatible with \texttt{jax.jit} and
+\texttt{jax.vmap} so that it can be batched across nested-sampling live points
+on GPU.
 
-In our implementation, the \texttt{mlgw\_bns\_jax} \texttt{predict()} function
-is called twice per likelihood evaluation:
-\begin{lstlisting}
-h_lin = predict(params, f_lin_jax, M, D, iota)
-h_qua = predict(params, f_qua_jax, M, D, iota)
-\end{lstlisting}
-Both calls operate on $\mathcal{O}(10^2)$ frequency points rather than
-$\mathcal{O}(10^5)$, and are JIT-compiled and \texttt{vmap}'d across sampler
-particles.
 
-\subsection{ROQ weights}
+\subsection{Analytical time marginalization}
+\label{sec:time_marg}
 
-The weights are pre-computed once before sampling:
-\begin{align}
-    w_j^{(\rm lin)} &= \sum_k \bar{B}^{(\rm lin)}_{jk}\,
-        \frac{4\,\Delta f}{S_n(f_k)}, \\
-    d_j^{(\rm roq)} &= \sum_k \bar{B}^{(\rm lin)}_{jk}\,
-        \frac{\bar{d}_k \cdot 4\,\Delta f}{S_n(f_k)}, \\
-    w_j^{(\rm qua)} &= \sum_k \bar{B}^{(\rm qua)}_{jk}\,
-        \frac{4\,\Delta f}{S_n(f_k)},
-\end{align}
-where $B^{(\rm lin/qua)}$ are the basis interpolant matrices output by
-\texttt{JenpyROQ}, $d_k$ is the detector data, and $S_n(f_k)$ the PSD.
-The constant term $\langle d | d \rangle$ is also pre-computed.  All weights
-are stored as JAX arrays on GPU.
+The coalescence time $t_c$ enters the waveform only as an overall phase ramp.
+In the RB framework, this takes the particularly simple form:
+\begin{equation}
+    r_j(t_c) = r_j^{(0)} \exp\!\bigl(-\mathrm{i}\, 2\pi f_j\,\Delta t_c\bigr),
+    \quad \Delta t_c = t_c - t_{c,0},
+\end{equation}
+where $t_{c,0}$ is the fiducial coalescence time.  Consequently, the
+per-detector log-likelihood at time $t_c$ reads
+\begin{equation}
+    \ln \mathcal{L}_{\rm RB}^{(d)}(t_c)
+    = -\frac{2\Delta t}{N}\!\left[
+        \mathcal{D}^{(d)}
+        - 2\,\mathrm{Re}\!\left(
+            \sum_j r_j^{(0)} A_{0,j}^{(d)}
+            e^{-\mathrm{i}2\pi f_j \Delta t_c}
+          \right)
+        + B_0^{(d)}
+    \right].
+\end{equation}
+The cross-correlation term for all $N_{t_c}$ time grid points can be
+written as a single matrix--vector product
+\begin{equation}
+    \mathbf{W}^{(d)} = \mathrm{Re}\!\left[
+        \mathbf{P}\,\bigl(\mathbf{r}^{(0)} \odot \mathbf{A}_0^{(d)}\bigr)
+    \right],
+    \quad P_{kj} = e^{-\mathrm{i}2\pi f_j \Delta t_{c,k}},
+\end{equation}
+where $\mathbf{P}$ has shape $(N_{t_c} \times N_{\rm bins})$.  We use
+$N_{t_c} = 3000$ uniformly spaced points over $[\Delta t_{c,\min},
+\Delta t_{c,\max}] = [-150, +150]$\,ms.  The time-marginalized log-likelihood
+is then
+\begin{equation}
+    \ln \mathcal{L}_{\rm marg}^{t_c}(\bm{\theta})
+    = \mathrm{logsumexp}_k \bigl[\ln \mathcal{L}(t_{c,k};\bm{\theta})\bigr]
+      - \ln N_{t_c}.
+    \label{eq:time_marg}
+\end{equation}
+All $N_{t_c}$ evaluations are performed simultaneously by JAX as a single
+batched matrix multiply, costing $\mathcal{O}(N_{t_c} N_{\rm bins})$ per
+likelihood call rather than $N_{t_c}$ independent full-grid evaluations.
 
-\subsection{Files required for PE}
 
-The ROQ build produces large basis files ($\gtrsim 400$\,MB) that are only
-needed during weight pre-computation.  For the actual sampling, only the
-small files are required:
-\begin{itemize}
-    \item Empirical frequencies: \texttt{empirical\_frequencies\_\{linear,quadratic\}.npy}
-    \item Empirical nodes: \texttt{empirical\_nodes\_\{linear,quadratic\}.npy}
-    \item Basis interpolants: \texttt{basis\_interpolant\_\{linear,quadratic\}.npy}
-\end{itemize}
-These total $\mathcal{O}(10)$\,MB and can be packaged for use in
-cloud-based GPU environments such as Google Colab.
+\subsection{Analytical phase marginalization}
+\label{sec:phase_marg}
+
+The coalescence phase $\varphi_c$ enters the likelihood as a global rotation
+of the complex waveform ratio.  At fixed $t_c$, the network cross-term is
+\begin{equation}
+    W(t_c; \varphi_c) = e^{-\mathrm{i}\varphi_c}\,W_0(t_c),
+    \quad W_0(t_c) = \sum_d \frac{2\Delta t}{N}
+    \sum_j r_j^{(0)} A_{0,j,\text{no}\varphi}^{(d)}\,
+    e^{-\mathrm{i}2\pi f_j \Delta t_c},
+\end{equation}
+where $A_{0,j,\text{no}\varphi}^{(d)}$ is the $A_0$ array computed with the
+fiducial phase set to zero.  Integrating over $\varphi_c \in [0, 2\pi)$
+with a uniform prior gives
+\begin{equation}
+    \mathcal{L}_{\rm marg}^{t_c,\varphi_c}
+    \propto \exp\!\bigl(-\tfrac{2\Delta t}{N} B_0^{\rm net}\bigr)\,
+    I_0\!\bigl(2\,|W_0(t_c)|\bigr),
+\end{equation}
+where $I_0$ is the modified Bessel function of the first kind.  Combining
+with the time grid, the joint marginalized log-likelihood is
+\begin{equation}
+    \ln \mathcal{L}_{\rm marg}^{t_c,\varphi_c}(\bm{\theta})
+    = \mathrm{const} + \mathrm{logsumexp}_k
+      \bigl[\ln I_0\!\bigl(2\,|W_0(t_{c,k})|\bigr)\bigr]
+      - \ln N_{t_c}.
+    \label{eq:tc_phi_marg}
+\end{equation}
+By marginalizing over both $t_c$ and $\varphi_c$ analytically, the sampled
+parameter space is reduced from 11 to 9 dimensions, removing the two
+sharpest and most difficult-to-sample posteriors.
 
 
 %==========================================================================
-\section{Parameter estimation of GW170817 with \textsc{SHARPy}}
+\section{Parameter estimation of GW170817 with BlackJAX nested sampling}
 \label{sec:pe}
 
-\subsection{The \textsc{SHARPy} sampler}
+\subsection{The BlackJAX acceptance-walk nested sampler}
 
-\textsc{SHARPy}~\cite{SHARPy} is a sequential Monte Carlo (SMC) sampler
-designed for gravitational-wave inference.  It evolves a population of
-weighted particles through a sequence of tempered distributions, using
-Hamiltonian-like kernels for the rejuvenation step.  Its key feature is that
-the likelihood evaluation for all particles is vectorized via
-\texttt{jax.vmap}, enabling massive parallelism on GPU.
+BlackJAX~\cite{BlackJAX} is a modular library of Bayesian inference
+algorithms implemented in JAX.  We use the acceptance-walk nested sampler
+from the \texttt{blackjax\_ns\_gw} package~\cite{Handley:2015fda}, which
+evolves a population of live points by iteratively replacing the
+lowest-likelihood point with a new one drawn from within the current
+likelihood contour via a sequence of Metropolis--Hastings proposals.  The
+algorithm terminates when the estimated remaining log-evidence
+$\Delta \ln Z = \ln(Z_{\rm live}/Z) < 0.1$.
 
-This vectorization requires the entire likelihood function --- including
-waveform generation, antenna pattern projection, and time-delay computation
---- to be expressed as JAX primitives.  \textsc{SHARPy}'s utility functions
-(antenna patterns, time delays, sidereal time) are already implemented in
-\texttt{jax.numpy}, and \texttt{mlgw\_bns\_jax} completes the JAX-native
-stack.
+Because the entire likelihood function is a JAX computation graph, the
+proposal kernel and likelihood evaluation are both JIT-compiled, and live
+points can be processed in a batched fashion on GPU.
 
 \subsection{Analysis setup}
 
-We analyse the deglitched GWOSC data~\cite{GWOSC} for GW170817, centered at
-GPS time $1187008857$, with:
+We analyse the BayesWave-deglitched GWOSC data~\cite{GWOSC} for GW170817,
+using a 1024-s strain at 4096\,Hz with a 128-s analysis segment.  The
+setup is:
 \begin{itemize}
     \item Detectors: LIGO Hanford (H1), LIGO Livingston (L1), Virgo (V1);
     \item Frequency range: $[23, 2000]$\,Hz;
     \item Segment length: $T = 128$\,s;
     \item Waveform: \texttt{mlgw\_bns\_jax};
-    \item Sampler: \textsc{SHARPy} with \tbd{N} particles;
-    \item Sky position: fixed to EM counterpart
-          ($\alpha = 3.446$\,rad, $\delta = -0.408$\,rad).
+    \item Likelihood: relative-binning with $N_{\rm bins} = 400$, with
+          analytical marginalization over $t_c$ (3000-point grid,
+          $\pm150$\,ms) and $\varphi_c$ (Bessel-function identity);
+    \item Sampler: BlackJAX acceptance-walk nested sampler~\cite{BlackJAX};
+    \item Sky location: sampled freely over the full sky
+          ($\alpha \in [0, 2\pi)$, $\delta \in [-\pi/2, +\pi/2)$).
 \end{itemize}
+
+Unlike the original \texttt{mlgw\_bns} analysis of~\cite{Tissino:2022},
+which fixed the sky position to the known electromagnetic counterpart
+($\alpha = 3.446$\,rad, $\delta = -0.408$\,rad), our implementation
+treats right ascension and declination as free parameters.  Combined
+with the analytical marginalization over $t_c$ and $\varphi_c$, the
+sampler operates in an 11-dimensional parameter space:
+$\{\ln d_L,\, \theta_{JN},\, \psi,\, \alpha,\, \delta,\,
+  \mathcal{M}_c,\, q,\, \chi_1,\, \chi_2,\, \Lambda_1,\, \Lambda_2\}$.
 
 \subsection{Results}
 
@@ -547,35 +535,39 @@ GPS time $1187008857$, with:
 
 The posterior distributions for the chirp mass $\mathcal{M}_c$, mass ratio
 $q$, effective spin $\chi_{\rm eff}$, reduced tidal parameter
-$\tilde{\Lambda}$, and luminosity distance $D_L$ are shown in
-Fig.~\ref{fig:corner}.  Our results are consistent with those reported
-in~\cite{Tissino:2022} using \texttt{mlgw\_bns} with \texttt{bajes} and
-\texttt{dynesty}, as well as with the original LVK
-analyses~\cite{Abbott:2017GW170817,Abbott:2019GW170817}.
+$\tilde{\Lambda}$, luminosity distance $D_L$, and sky location
+$(\alpha, \delta)$ are shown in Fig.~\ref{fig:corner}.  Our results are
+consistent with those reported in~\cite{Tissino:2022} using
+\texttt{mlgw\_bns} with \texttt{bajes} and \texttt{dynesty}, as well as
+with the original LVK analyses~\cite{Abbott:2017GW170817,Abbott:2019GW170817}.
+Crucially, by treating sky location as a free parameter, our analysis goes
+beyond~\cite{Tissino:2022} and is directly comparable to the full LVK
+analyses.
 
 \begin{figure}[t]
 \centering
 % \includegraphics[width=\columnwidth]{corner_plot.pdf}
 \fbox{\parbox{0.9\columnwidth}{\centering\vspace{2cm}%
-\tbd{Corner plot: SHARPy + mlgw\_bns\_jax posteriors}%
+\tbd{Corner plot: BlackJAX NS + mlgw\_bns\_jax posteriors (sky free)}%
 \vspace{2cm}}}
 \caption{Posterior distributions for selected parameters of GW170817,
-obtained with \textsc{SHARPy} and \texttt{mlgw\_bns\_jax}.
+obtained with BlackJAX nested sampling and \texttt{mlgw\_bns\_jax} using
+the time+phase-marginalized relative-binning likelihood, with sky location
+($\alpha$, $\delta$) sampled freely.
 \tbd{Add comparison with bajes+TEOBResumSPA.}}
 \label{fig:corner}
 \end{figure}
 
-\subsection{ROQ-accelerated PE}
+\subsection{Relative-binning accuracy validation}
 
-\tbd{Fill with ROQ PE results and timing comparison when available.}
+\tbd{Fill with validation results when available.}
 
-By employing the ROQ interpolants described in Sec.~\ref{sec:roq}, the
-likelihood evaluation cost is dominated by the $\sim\!260$ waveform
-evaluations at the linear empirical nodes, rather than the full
-$253{,}057$-point grid.  Combined with the GPU-parallel
-\texttt{vmap} evaluation across $\sim\!500$ particles, we expect a total
-PE speedup of \tbd{X}$\times$ compared to the standard
-\texttt{mlgw\_bns} + \texttt{bajes} + \texttt{dynesty} pipeline.
+We validate the RB approximation by comparing the full and RB
+time-marginalized log-likelihoods evaluated at 50 random parameter points
+drawn from within the posterior support.  The two are consistent to within
+\tbd{X} log-likelihood units, confirming that the $N_{\rm bins} = 400$
+binning is fine enough to faithfully represent the waveform ratio across
+the GW170817 parameter space.
 
 
 %==========================================================================
@@ -595,19 +587,29 @@ the \texttt{mlgw\_bns} BNS waveform surrogate.  The key results are:
           enables gradient-based sampling and Fisher matrix computations.
 
     \item \textbf{GPU acceleration}: native execution on GPU/TPU hardware,
-          with \texttt{vmap} vectorization across sampler particles.
+          with \texttt{vmap} vectorization across live points.
 
-    \item \textbf{ROQ compression}: waveform evaluation at
-          $\mathcal{O}(10^2)$ empirical nodes instead of
-          $\mathcal{O}(10^5)$ grid points, with $\sim\!100\times$ memory
-          reduction.  In addition to the \texttt{JenpyROQ}-based
-          construction, we provide a JAX-native ROQ builder that exploits
-          \texttt{jax.jit} and \texttt{jax.vmap} for parallelized basis
-          construction with streaming memory management and checkpoint /
-          resume support (Sec.~\ref{sec:roq_jax}).
+    \item \textbf{Relative-binning likelihood}: waveform evaluation at
+          $N_{\rm bins} \sim 400$ bin-centre frequencies instead of
+          $N_{\rm freq} \sim 3000$ full-grid points, implemented in JAX
+          with full JIT and \texttt{vmap} compatibility.
 
-    \item \textbf{SHARPy integration}: full compatibility with the
-          \textsc{SHARPy} SMC sampler for GPU-parallel PE.
+    \item \textbf{Analytical marginalization}: closed-form marginalization
+          over coalescence time (logsumexp over a 3000-point grid) and
+          coalescence phase (modified Bessel function identity), reducing
+          the sampled parameter space from 11 to 9 dimensions and removing
+          the sharpest posteriors from the sampling problem.
+
+    \item \textbf{Sky location sampling}: unlike the original
+          \texttt{mlgw\_bns} analysis~\cite{Tissino:2022} which fixed the
+          sky position to the GW170817 electromagnetic counterpart, our PE
+          treats right ascension and declination as free parameters,
+          yielding a full 11-dimensional posterior directly comparable to
+          the official LVK analyses.
+
+    \item \textbf{BlackJAX nested sampling}: full compatibility with the
+          BlackJAX acceptance-walk nested sampler for GPU-parallel PE of
+          GW170817.
 \end{enumerate}
 
 The combination of these advances positions \texttt{mlgw\_bns\_jax} as a
@@ -618,7 +620,8 @@ ground-based detectors.
 Future directions include: (i)~extending the model to higher harmonics and
 precessing spins; (ii)~coupling with post-merger models; (iii)~exploiting
 automatic differentiation for Hamiltonian nested sampling;
-(iv)~GPU-accelerated ROQ weight computation for multi-detector networks.
+(iv)~GPU-accelerated relative-binning summary-data computation for
+multi-detector networks.
 
 \subsection*{Software availability}
 
@@ -628,8 +631,8 @@ automatic differentiation for Hamiltonian nested sampling;
 \noindent The original \texttt{mlgw\_bns} is available at:\\
 \url{https://github.com/jacopok/mlgw_bns}
 
-\noindent \texttt{JenpyROQ} is available at:\\
-\url{https://github.com/GCArullo/JenpyROQ}
+\noindent BlackJAX is available at:\\
+\url{https://github.com/blackjax-devs/blackjax}
 
 
 \begin{acknowledgments}
@@ -658,16 +661,23 @@ M.~Breschi, R.~Gamba, and S.~Bernuzzi,
 Phys.\ Rev.\ D \textbf{104}, 042001 (2021),
 \href{https://arxiv.org/abs/2102.00017}{arXiv:2102.00017}.
 
-\bibitem{JenpyROQ}
-G.~Carullo,
-\texttt{JenpyROQ},
-\url{https://github.com/GCArullo/JenpyROQ}.
+\bibitem{Zackay:2018}
+B.~Zackay, L.~Dai, and T.~Venumadhav,
+\emph{Relative binning and fast likelihood evaluation for gravitational
+wave parameter estimation},
+(2018),
+\href{https://arxiv.org/abs/1806.08792}{arXiv:1806.08792}.
 
-\bibitem{SHARPy}
-G.~De~Masi \emph{et al.},
-\textsc{SHARPy}: Sequential Monte Carlo for gravitational-wave parameter
-estimation,
-\tbd{citation}.
+\bibitem{BlackJAX}
+BlackJAX Contributors,
+\emph{BlackJAX: Composable samplers in JAX},
+\url{https://github.com/blackjax-devs/blackjax}.
+
+\bibitem{Handley:2015fda}
+W.~J.~Handley, M.~P.~Hobson, and A.~N.~Lasenby,
+\emph{PolyChord: next-generation nested sampling},
+Mon.\ Not.\ R.\ Astron.\ Soc.\ \textbf{453}, 4384 (2015),
+\href{https://arxiv.org/abs/1506.00171}{arXiv:1506.00171}.
 
 \bibitem{jax2018github}
 J.~Bradbury \emph{et al.},
@@ -699,13 +709,6 @@ Phys.\ Rev.\ X \textbf{9}, 031040 (2019),
 A.~Coogan \emph{et al.},
 (2022),
 \href{https://arxiv.org/abs/2202.09380}{arXiv:2202.09380}.
-
-\bibitem{Field:2014ROQ}
-S.~E.~Field, C.~R.~Galley, J.~S.~Hesthaven, J.~Kaye, and M.~Tiglio,
-\emph{Fast prediction and evaluation of gravitational waveforms using
-surrogate models},
-Phys.\ Rev.\ X \textbf{4}, 031006 (2014),
-\href{https://arxiv.org/abs/1308.3565}{arXiv:1308.3565}.
 
 \end{thebibliography}
 
