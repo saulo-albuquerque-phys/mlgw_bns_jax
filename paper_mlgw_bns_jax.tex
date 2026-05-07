@@ -363,7 +363,7 @@ $\partial h_{+,\times}/\partial\bm{\theta}$ are obtained for free via
 
 \subsection{Relative binning}
 
-The relative-binning (RB) method of Zackay, Dai \& Venumadhav~\cite{Zackay:2018}
+The relative-binning (RB) method of Zackay et al.~\cite{Zackay:2018}
 reduces the cost of each likelihood evaluation from $\mathcal{O}(N_{\rm freq})$
 to $\mathcal{O}(N_{\rm bins})$, where $N_{\rm bins} \ll N_{\rm freq}$.  The
 key observation is that for a candidate template $h(\bm{\theta})$ close to a
@@ -384,15 +384,17 @@ summary data for each detector $d$:
         \frac{|h_{0,k}^{(d)}|^2}{\sigma_k^2}, \label{eq:B0}\\
     \mathcal{D}^{(d)} &= \sum_k \frac{|d_k|^2}{\sigma_k^2}, \label{eq:dd}
 \end{align}
-where $\sigma_k^2 \propto S_n(f_k)$ is the noise power spectral density
-and $\overline{\cdot}$ denotes complex conjugation.  Given these pre-computed
+where $\sigma_k^2 \propto S_n(f_k)$ is the noise power spectral density,
+$\Delta t = 1/f_s$ is the sampling interval, $N = f_s T$ is the number of
+samples in the analysis segment of duration $T$, and $\overline{\cdot}$
+denotes complex conjugation.  Given these pre-computed
 quantities, the approximate log-likelihood at any candidate $\bm{\theta}$ is
 \begin{equation}
     \ln \mathcal{L}_{\rm RB}(\bm{\theta}) \approx
     -\frac{2\Delta t}{N}\sum_d \!\left[
         \mathcal{D}^{(d)}
         - 2\,\mathrm{Re}\!\left(\sum_j r_j \, A_{0,j}^{(d)}\right)
-        + |r_j|^2 B_{0,j}^{(d)}
+        + \sum_j |r_j|^2 B_{0,j}^{(d)}
     \right],
 \end{equation}
 where only $N_{\rm bins} \sim 100$--$500$ waveform evaluations at bin-centre
@@ -424,7 +426,7 @@ per-detector log-likelihood at time $t_c$ reads
             \sum_j r_j^{(0)} A_{0,j}^{(d)}
             e^{-\mathrm{i}2\pi f_j \Delta t_c}
           \right)
-        + B_0^{(d)}
+        + \sum_j |r_j^{(0)}|^2 B_{0,j}^{(d)}
     \right].
 \end{equation}
 The cross-correlation term for all $N_{t_c}$ time grid points can be
@@ -458,15 +460,15 @@ of the complex waveform ratio.  At fixed $t_c$, the network cross-term is
 \begin{equation}
     W(t_c; \varphi_c) = e^{-\mathrm{i}\varphi_c}\,W_0(t_c),
     \quad W_0(t_c) = \sum_d \frac{2\Delta t}{N}
-    \sum_j r_j^{(0)} A_{0,j,\text{no}\varphi}^{(d)}\,
+    \sum_j r_j^{(0)} \tilde{A}_{0,j}^{(d)}\,
     e^{-\mathrm{i}2\pi f_j \Delta t_c},
 \end{equation}
-where $A_{0,j,\text{no}\varphi}^{(d)}$ is the $A_0$ array computed with the
-fiducial phase set to zero.  Integrating over $\varphi_c \in [0, 2\pi)$
+where $\tilde{A}_{0,j}^{(d)}$ is the $A_0$ array computed with the
+fiducial phase set to zero (phase-stripped).  Integrating over $\varphi_c \in [0, 2\pi)$
 with a uniform prior gives
 \begin{equation}
     \mathcal{L}_{\rm marg}^{t_c,\varphi_c}
-    \propto \exp\!\bigl(-\tfrac{2\Delta t}{N} B_0^{\rm net}\bigr)\,
+    \propto \exp\!\bigl(-\tfrac{2\Delta t}{N} \sum_d\sum_j |r_j^{(0)}|^2 B_{0,j}^{(d)}\bigr)\,
     I_0\!\bigl(2\,|W_0(t_c)|\bigr),
 \end{equation}
 where $I_0$ is the modified Bessel function of the first kind.  Combining
@@ -505,8 +507,8 @@ points can be processed in a batched fashion on GPU.
 \subsection{Analysis setup}
 
 We analyse the BayesWave-deglitched GWOSC data~\cite{GWOSC} for GW170817,
-using a 1024-s strain at 4096\,Hz with a 128-s analysis segment.  The
-setup is:
+downloading 1024\,s of strain at 4096\,Hz and extracting a 128-s analysis
+segment centered on the merger trigger time.  The setup is:
 \begin{itemize}
     \item Detectors: LIGO Hanford (H1), LIGO Livingston (L1), Virgo (V1);
     \item Frequency range: $[23, 2000]$\,Hz;
